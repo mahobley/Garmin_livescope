@@ -76,13 +76,15 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy 
 
 ### Record Video
 
-Record the displayed view to MP4:
+Enable button-controlled MP4 recording of the displayed view:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-video livescope.mp4
 ```
 
-Record the warped view:
+The viewer will show a `START REC` button in the OpenCV window. Click it to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
+
+Enable recording for the warped view:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy --record-video livescope_xy.mp4
@@ -95,6 +97,8 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy 
 ```
 
 `--video-fps` does not force the Garmin stream to produce that many frames. It controls how fast the saved video plays back.
+
+Each start/stop creates a complete clip. The first recording uses the exact path you gave, such as `livescope_xy.mp4`; later recordings in the same run use names like `livescope_xy_002.mp4`, `livescope_xy_003.mp4`, and so on.
 
 ## Decode a PCAPNG
 

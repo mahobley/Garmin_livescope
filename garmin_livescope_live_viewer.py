@@ -40,6 +40,8 @@ from warp_garmin_polar_to_xy import COLOR_SCHEMES, apply_color_scheme, bilinear_
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
+WINDOW_NAME = "Garmin GLS 10 LiveScope"
+RECORD_BUTTON = (10, 42, 150, 84)
 
 
 @dataclass
@@ -194,6 +196,69 @@ def make_video_writer(path: Path, fps: float, frame_size: Tuple[int, int]) -> cv
     return writer
 
 
+def video_clip_path(base_path: Path, clip_index: int) -> Path:
+    """Return the path for a recording clip, preserving the exact first path."""
+    if clip_index == 1:
+        return base_path
+    suffix = base_path.suffix or ".mp4"
+    return base_path.with_name(f"{base_path.stem}_{clip_index:03d}{suffix}")
+
+
+@dataclass
+class RecordingState:
+    base_path: Path
+    fps: float
+    writer: Optional[cv2.VideoWriter] = None
+    active_path: Optional[Path] = None
+    clip_index: int = 0
+    requested: bool = False
+
+    def toggle_requested(self) -> None:
+        self.requested = not self.requested
+
+    def sync(self, frame_size: Tuple[int, int]) -> None:
+        if self.requested and self.writer is None:
+            self.clip_index += 1
+            self.active_path = video_clip_path(self.base_path, self.clip_index)
+            self.writer = make_video_writer(self.active_path, self.fps, frame_size)
+            print(f"Recording displayed view to {self.active_path}")
+        elif not self.requested and self.writer is not None:
+            self.stop()
+
+    def write(self, frame: np.ndarray) -> None:
+        if self.writer is not None:
+            self.writer.write(frame)
+
+    def stop(self) -> None:
+        if self.writer is None:
+            return
+        self.writer.release()
+        self.writer = None
+        print(f"Video saved: {self.active_path}")
+
+
+def draw_record_button(display: np.ndarray, recording_enabled: bool, recording: bool) -> None:
+    """Draw a simple clickable recording button onto the OpenCV frame."""
+    if not recording_enabled:
+        return
+
+    x1, y1, x2, y2 = RECORD_BUTTON
+    fill = (32, 32, 180) if recording else (40, 120, 40)
+    label = "STOP REC" if recording else "START REC"
+
+    cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
+    cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
+    cv2.putText(
+        display,
+        label,
+        (x1 + 10, y1 + 27),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2,
+    )
+
+
 class GarminFrameAssembler:
     def __init__(self, stream_filter: Optional[int] = 0x00060044):
         self.stream_filter = stream_filter
@@ -260,7 +325,7 @@ def main() -> None:
     parser.add_argument("--iface", required=True, help="Network interface, e.g. en0, eth0, Ethernet")
     parser.add_argument("--stream", default="0x00060044", help="Stream ID hex, or 'all'")
     parser.add_argument("--save", type=Path, default=None, help="Optional folder to save JPEG frames")
-    parser.add_argument("--record-video", type=Path, default=None, help="Optional output video path for the displayed view")
+    parser.add_argument("--record-video", type=Path, default=None, help="Enable button-controlled video recording to this path")
     parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into --record-video; default: 20")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
     parser.add_argument("--warp-xy", action="store_true", help="Warp theta/range frames into an X/Y fan view")
@@ -291,17 +356,29 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
-    video_writer: Optional[cv2.VideoWriter] = None
+    recording = RecordingState(args.record_video, args.video_fps) if args.record_video else None
 
     print("Listening for Garmin LiveScope packets...")
     print("Press q in the OpenCV window to quit.")
+    if recording:
+        print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
+
+        def on_mouse(event, x, y, _flags, _param) -> None:
+            if event != cv2.EVENT_LBUTTONDOWN:
+                return
+            x1, y1, x2, y2 = RECORD_BUTTON
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                recording.toggle_requested()
+
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(WINDOW_NAME, on_mouse)
 
     bpf = "udp"
     if args.udp_port is not None:
         bpf = f"udp port {args.udp_port}"
 
     def handle_packet(pkt) -> None:
-        nonlocal frame_count, t0, video_writer
+        nonlocal frame_count, t0
 
         if UDP not in pkt or Raw not in pkt:
             return
@@ -353,14 +430,13 @@ def main() -> None:
             2,
         )
 
-        cv2.imshow("Garmin GLS 10 LiveScope", display)
+        if recording:
+            height, width = display.shape[:2]
+            recording.sync((width, height))
+            draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
+            recording.write(display)
 
-        if args.record_video:
-            if video_writer is None:
-                height, width = display.shape[:2]
-                video_writer = make_video_writer(args.record_video, args.video_fps, (width, height))
-                print(f"Recording displayed view to {args.record_video}")
-            video_writer.write(display)
+        cv2.imshow(WINDOW_NAME, display)
 
         if args.save:
             out = args.save / f"frame_{frame_id:06d}.jpg"
@@ -369,7 +445,10 @@ def main() -> None:
                 warped_out = args.save / f"frame_{frame_id:06d}_xy.png"
                 cv2.imwrite(str(warped_out), display)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("r") and recording:
+            recording.toggle_requested()
+        if key == ord("q"):
             raise KeyboardInterrupt
 
     try:
@@ -377,9 +456,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        if video_writer is not None:
-            video_writer.release()
-            print(f"Video saved: {args.record_video}")
+        if recording is not None:
+            recording.stop()
         cv2.destroyAllWindows()
 
 
