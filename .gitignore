@@ -1,6 +1,14 @@
-*.mp4
+cat > .gitignore <<'EOF'
 __pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.DS_Store
+.ipynb_checkpoints/
+*.mp4
 garmin_out/
 *.jpg
 *.png
 *.pcapng
+EOF
