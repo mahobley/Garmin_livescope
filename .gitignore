@@ -1,0 +1,6 @@
+*.mp4
+__pycache__/
+garmin_out/
+*.jpg
+*.png
+*.pcapng
