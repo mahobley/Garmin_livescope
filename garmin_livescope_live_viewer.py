@@ -286,7 +286,7 @@ class EchogramState:
         column = cv2.resize(profile[:, None], (1, self.height), interpolation=cv2.INTER_AREA)[:, 0]
         self.image[:, :-1] = self.image[:, 1:]
         self.image[:, -1] = column
-        return cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
+        return self.image.copy()
 
 
 @dataclass
@@ -512,6 +512,10 @@ def main() -> None:
     parser.add_argument("--echogram-width", type=int, default=700, help="Scrolling echogram window width; default: 700")
     parser.add_argument("--echogram-height", type=int, default=512, help="Scrolling echogram window height; default: 512")
     parser.add_argument("--echogram-mode", choices=("max", "mean"), default="max", help="Range profile reducer for echogram columns; default: max")
+    parser.add_argument("--echogram-motion", action="store_true", help="Start echogram window with background subtraction enabled")
+    parser.add_argument("--echogram-motion-alpha", type=float, default=0.04, help="Echogram background learning rate; default: 0.04")
+    parser.add_argument("--echogram-motion-threshold", type=int, default=14, help="Minimum echogram brightness change shown; default: 14")
+    parser.add_argument("--echogram-motion-gain", type=float, default=4.0, help="Brightness gain for echogram differences; default: 4.0")
     parser.add_argument(
         "--colorscheme",
         "--colourscheme",
@@ -545,6 +549,12 @@ def main() -> None:
         threshold=max(0, args.motion_threshold),
         gain=max(0.0, args.motion_gain),
     )
+    echogram_motion = MotionState(
+        enabled=args.echogram_motion,
+        alpha=float(np.clip(args.echogram_motion_alpha, 0.0, 1.0)),
+        threshold=max(0, args.echogram_motion_threshold),
+        gain=max(0.0, args.echogram_motion_gain),
+    )
 
     print("Listening for Garmin LiveScope packets...")
     print("Press q in the OpenCV window to quit.")
@@ -554,6 +564,7 @@ def main() -> None:
     print("Click START REC in the main OpenCV window, or press r, to start/stop raw recording.")
     if echogram is not None:
         print("Showing scrolling echogram in a second OpenCV window. Its START REC button records echogram footage.")
+        print("Click MOTION ON/OFF in the echogram window, or press b, to toggle echogram background subtraction.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -596,6 +607,11 @@ def main() -> None:
         x1, y1, x2, y2 = RECORD_BUTTON
         if x1 <= x <= x2 and y1 <= y <= y2:
             echogram_recording.toggle_requested()
+            return
+
+        x1, y1, x2, y2 = MOTION_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            echogram_motion.toggle()
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(WINDOW_NAME, on_mouse)
@@ -629,7 +645,9 @@ def main() -> None:
             return
 
         if echogram is not None:
-            echogram_display = echogram.add_frame(img)
+            echogram_img = echogram.add_frame(img)
+            echogram_img = echogram_motion.apply(echogram_img)
+            echogram_display = cv2.cvtColor(echogram_img, cv2.COLOR_GRAY2BGR)
             echogram_recording.sync((echogram_display.shape[1], echogram_display.shape[0]))
             echogram_recording.write(echogram_display)
             draw_record_button(
@@ -637,6 +655,7 @@ def main() -> None:
                 recording_enabled=True,
                 recording=echogram_recording.writer is not None,
             )
+            draw_motion_button(echogram_display, motion_enabled=echogram_motion.enabled)
             cv2.imshow(ECHOGRAM_WINDOW_NAME, echogram_display)
 
         raw_view_img = rotate_raw_view(img)
@@ -704,6 +723,8 @@ def main() -> None:
             recording.toggle_requested()
         if key == ord("e") and echogram is not None:
             echogram_recording.toggle_requested()
+        if key == ord("b") and echogram is not None:
+            echogram_motion.toggle()
         if key == ord("w"):
             view.toggle()
         if key == ord("m"):

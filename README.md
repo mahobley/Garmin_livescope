@@ -82,7 +82,7 @@ Lower `--motion-threshold` shows weaker movement but may show more noise. Higher
 
 The OpenCV window is created only after the first complete frame is decoded. If the script says it is listening but no window appears, it may not be receiving Garmin chunks on that interface yet.
 
-The viewer also opens a second `Garmin LiveScope Echogram` window by default. It scrolls over time, adding one range-history column per decoded frame. The echogram window has its own `START REC` / `STOP REC` button that records echogram footage only. Hide it with:
+The viewer also opens a second `Garmin LiveScope Echogram` window by default. It scrolls over time, adding one range-history column per decoded frame. The echogram window has its own `START REC` / `STOP REC` button that records echogram footage only, plus its own `MOTION ON` / `MOTION OFF` background subtraction button. Hide it with:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --no-echogram
@@ -95,7 +95,12 @@ Useful echogram options:
 --echogram-height 512
 --echogram-mode max
 --echogram-mode mean
+--echogram-motion
+--echogram-motion-threshold 14
+--echogram-motion-gain 4.0
 ```
+
+Press `b` to toggle echogram background subtraction from the keyboard.
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
 
@@ -138,7 +143,7 @@ The echogram window records separately to `echogram.mp4` by default:
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-echogram echogram.mp4
 ```
 
-Click `START REC` in the echogram window to record echogram footage only. You can also press `e` while an OpenCV window is focused.
+Click `START REC` in the echogram window to record echogram footage only. If echogram motion is enabled, the echogram recording includes that filtered view. You can also press `e` while an OpenCV window is focused.
 
 Start the viewer in warped view while still recording raw footage:
 
