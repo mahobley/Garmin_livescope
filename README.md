@@ -103,16 +103,23 @@ Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV 
 
 ### Save Frames
 
-Save decoded JPEG frames:
+Every decoded frame is saved by default to `frames/`:
+
+```bash
+frame_XXXXXX_raw_rotated.png  rotated raw view, lossless PNG
+```
+
+Change or disable the frame dump:
+
+```bash
+--frames-dir frames
+--no-save-frames
+```
+
+The older `--save` option is still available for display-oriented frame images:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --save live_frames
-```
-
-Save raw JPEGs and warped PNGs:
-
-```bash
-sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy --save live_frames
 ```
 
 ### Record Video
@@ -124,13 +131,13 @@ The viewer always shows these controls:
 - `MOTION ON` / `MOTION OFF`: show recent changes while suppressing static background.
 - `-` / `+`: lower or raise motion gain.
 
-By default, the main LiveScope recording is written to `livescope.mp4`. To choose a different raw output path:
+By default, the main LiveScope recording is written to `livescope.mp4`. MP4 is still lossy, but the writer tries the best MP4 codecs OpenCV exposes first (`avc1`, `H264`) before falling back to `mp4v`. The saved PNG frames are the lossless copy. To choose a different raw output path:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-video livescope.mp4
 ```
 
-Click `START REC` in the main LiveScope window to start raw recording, click `STOP REC` to stop. You can also press `r` while an OpenCV window is focused.
+Click `START REC` in the main LiveScope window to start raw recording, click `STOP REC` to stop.
 
 You can switch between raw and warped view while recording. The saved video always records the rotated raw decoded Garmin footage, without the warped display or on-screen buttons.
 
@@ -140,7 +147,7 @@ The echogram window records separately to `echogram.mp4` by default:
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-echogram echogram.mp4
 ```
 
-Click `START REC` in the echogram window to record echogram footage only. The echogram recording includes the automatic background-subtracted view. You can also press `e` while an OpenCV window is focused.
+Click `START REC` in the echogram window to record echogram footage only. The echogram recording includes the automatic background-subtracted view.
 
 For automatic 10-minute autosave segments, use:
 
@@ -155,6 +162,8 @@ Autosave uses `livescope.mp4`, `livescope_002.mp4`, etc. for raw footage and `ec
 --record-echogram echo.mp4
 --autosave-minutes 10
 ```
+
+Saved videos preserve real elapsed time by repeating the most recent frame when the Garmin stream arrives below the output `--video-fps`. This keeps a 10-minute autosave segment playing back as roughly 10 minutes instead of being compressed by low incoming FPS.
 
 Start the viewer in warped view while still recording raw footage:
 

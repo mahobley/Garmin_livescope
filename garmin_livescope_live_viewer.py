@@ -191,21 +191,32 @@ def rotate_raw_view(img: np.ndarray) -> np.ndarray:
     return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
+def save_decoded_frame(outdir: Path, frame_id: int, raw_view_img: np.ndarray) -> None:
+    """Save the rotated raw frame as a lossless PNG."""
+    stem = f"frame_{frame_id:06d}"
+    cv2.imwrite(str(outdir / f"{stem}_raw_rotated.png"), raw_view_img)
+
+
 def make_video_writer(path: Path, fps: float, frame_size: Tuple[int, int]) -> cv2.VideoWriter:
-    """Create an OpenCV video writer for the displayed BGR frames."""
+    """Create an OpenCV video writer, preferring low-loss codecs when possible."""
     path.parent.mkdir(parents=True, exist_ok=True)
     suffix = path.suffix.lower()
-    if suffix in {".mp4", ".m4v"}:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    elif suffix == ".avi":
-        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    if suffix == ".avi":
+        codecs = ("FFV1", "HFYU", "MJPG")
+    elif suffix in {".mkv"}:
+        codecs = ("FFV1", "MJPG")
+    elif suffix in {".mp4", ".m4v"}:
+        codecs = ("avc1", "H264", "mp4v")
     else:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        codecs = ("FFV1", "MJPG", "mp4v")
 
-    writer = cv2.VideoWriter(str(path), fourcc, fps, frame_size)
-    if not writer.isOpened():
-        raise RuntimeError(f"could not open video writer for {path}")
-    return writer
+    for codec in codecs:
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*codec), fps, frame_size)
+        if writer.isOpened():
+            print(f"Video codec for {path}: {codec}")
+            return writer
+
+    raise RuntimeError(f"could not open video writer for {path} with codecs: {', '.join(codecs)}")
 
 
 def video_clip_path(base_path: Path, clip_index: int) -> Path:
@@ -226,6 +237,7 @@ class RecordingState:
     active_path: Optional[Path] = None
     frame_size: Optional[Tuple[int, int]] = None
     segment_started_at: Optional[float] = None
+    next_video_frame_at: Optional[float] = None
     clip_index: int = 0
     requested: bool = False
 
@@ -254,16 +266,35 @@ class RecordingState:
         self.active_path = video_clip_path(self.base_path, self.clip_index)
         self.frame_size = frame_size
         self.segment_started_at = time.time() if started_at is None else started_at
+        self.next_video_frame_at = self.segment_started_at
         self.writer = make_video_writer(self.active_path, self.fps, frame_size)
         print(f"Recording {self.label} to {self.active_path}")
 
     def write(self, frame: np.ndarray) -> None:
-        if self.writer is not None:
-            if self.frame_size is not None:
-                width, height = self.frame_size
-                if frame.shape[1] != width or frame.shape[0] != height:
-                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+        if self.writer is None:
+            return
+
+        if self.frame_size is not None:
+            width, height = self.frame_size
+            if frame.shape[1] != width or frame.shape[0] != height:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+        now = time.time()
+        frame_interval = 1.0 / max(self.fps, 0.001)
+        if self.next_video_frame_at is None:
+            self.next_video_frame_at = now
+
+        # OpenCV writes constant-FPS video. Fill the timeline with repeats so
+        # playback duration tracks real capture time when incoming FPS is lower.
+        max_fill_frames = max(1, int(self.fps * 2))
+        written = 0
+        while self.next_video_frame_at <= now and written < max_fill_frames:
             self.writer.write(frame)
+            self.next_video_frame_at += frame_interval
+            written += 1
+
+        if self.next_video_frame_at < now:
+            self.next_video_frame_at = now + frame_interval
 
     def stop(self) -> None:
         if self.writer is None:
@@ -272,6 +303,7 @@ class RecordingState:
         self.writer = None
         self.frame_size = None
         self.segment_started_at = None
+        self.next_video_frame_at = None
         print(f"Video saved: {self.active_path}")
 
 
@@ -555,7 +587,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--iface", required=True, help="Network interface, e.g. en0, eth0, Ethernet")
     parser.add_argument("--stream", default="0x00060044", help="Stream ID hex, or 'all'")
-    parser.add_argument("--save", type=Path, default=None, help="Optional folder to save JPEG frames")
+    parser.add_argument("--save", type=Path, default=None, help="Optional folder to save display-oriented frame images")
+    parser.add_argument("--frames-dir", type=Path, default=Path("frames"), help="Folder to save every rotated raw frame as PNG; default: frames")
+    parser.add_argument("--no-save-frames", action="store_true", help="Disable saving every decoded frame to --frames-dir")
     parser.add_argument("--record-video", type=Path, default=Path("livescope.mp4"), help="Output path for the START REC button; default: livescope.mp4")
     parser.add_argument("--record-echogram", type=Path, default=Path("echogram.mp4"), help="Output path for the echogram START REC button; default: echogram.mp4")
     parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into recorded video; default: 20")
@@ -597,8 +631,11 @@ def main() -> None:
     stream_filter = None if args.stream.lower() == "all" else int(args.stream, 0)
     assembler = GarminFrameAssembler(stream_filter=stream_filter)
 
+    save_all_frames = not args.no_save_frames
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)
+    if save_all_frames:
+        args.frames_dir.mkdir(parents=True, exist_ok=True)
 
     frame_count = 0
     t0 = time.time()
@@ -639,7 +676,7 @@ def main() -> None:
     print("Click WARP VIEW/RAW VIEW in the OpenCV window, or press w, to switch display modes.")
     print("Click MOTION ON/OFF in the OpenCV window, or press m, to toggle background subtraction.")
     print("Click -/+/gain value in the OpenCV window, or press [, ], and g, to adjust motion gain.")
-    print("Click START REC in the main OpenCV window, or press r, to start/stop raw recording.")
+    print("Click START REC in the main OpenCV window to start/stop raw recording.")
     if args.autosave_raw:
         print(f"Autosaving raw footage every {args.autosave_minutes:g} minute(s) to {args.record_video}")
     if args.autosave_echogram:
@@ -737,6 +774,9 @@ def main() -> None:
         raw_view_img = rotate_raw_view(img)
         raw_record_frame = cv2.cvtColor(raw_view_img, cv2.COLOR_GRAY2BGR)
 
+        if save_all_frames:
+            save_decoded_frame(args.frames_dir, frame_id, raw_view_img)
+
         frame_count += 1
         elapsed = max(0.001, time.time() - t0)
         fps = frame_count / elapsed
@@ -795,10 +835,6 @@ def main() -> None:
                 cv2.imwrite(str(warped_out), display)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord("r") and recording:
-            recording.toggle_requested()
-        if key == ord("e") and echogram is not None:
-            echogram_recording.toggle_requested()
         if key == ord("w"):
             view.toggle()
         if key == ord("m"):
