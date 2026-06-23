@@ -50,6 +50,8 @@ Raw decoded Garmin JPEG view:
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all
 ```
 
+Raw view, raw video recording, and saved raw frames are rotated 90 degrees counter-clockwise for display/use. The X/Y warp still uses the original decoded polar frame internally.
+
 Warped X/Y fan view:
 
 ```bash
@@ -60,7 +62,7 @@ The viewer has a `WARP VIEW` / `RAW VIEW` button. Click it to switch between the
 
 The viewer also has a `MOTION ON` / `MOTION OFF` button. This removes the slowly changing background and shows only pixels that changed recently. You can also press `m` while the OpenCV window is focused.
 
-Use the on-screen `-` and `+` buttons to lower or raise motion gain live. The gain value is shown between them. Keyboard shortcuts are `[` and `]`.
+Use the on-screen `-` and `+` buttons to lower or raise motion gain live. The gain value is shown between them; click the value to enter an exact number in the terminal. Keyboard shortcuts are `[`, `]`, and `g`.
 
 Start with motion view already enabled:
 
@@ -113,7 +115,7 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-v
 
 Click `START REC` to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
 
-You can switch between raw and warped view while recording. The saved video always records the raw decoded Garmin footage, without the warped display or on-screen buttons.
+You can switch between raw and warped view while recording. The saved video always records the rotated raw decoded Garmin footage, without the warped display or on-screen buttons.
 
 Start the viewer in warped view while still recording raw footage:
 

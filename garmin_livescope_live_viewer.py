@@ -45,6 +45,7 @@ RECORD_BUTTON = (10, 42, 126, 78)
 VIEW_BUTTON = (136, 42, 252, 78)
 MOTION_BUTTON = (262, 42, 390, 78)
 GAIN_DOWN_BUTTON = (10, 86, 48, 122)
+GAIN_VALUE_RECT = (48, 86, 112, 122)
 GAIN_UP_BUTTON = (112, 86, 150, 122)
 MOTION_GAIN_STEP = 0.5
 
@@ -184,6 +185,11 @@ def colorize_for_cv2(img: np.ndarray, color_scheme: str) -> np.ndarray:
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
+def rotate_raw_view(img: np.ndarray) -> np.ndarray:
+    """Rotate the decoded raw Garmin frame into the preferred viewing orientation."""
+    return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
 def make_video_writer(path: Path, fps: float, frame_size: Tuple[int, int]) -> cv2.VideoWriter:
     """Create an OpenCV video writer for the displayed BGR frames."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,6 +283,10 @@ class MotionState:
         self.gain = max(0.0, self.gain + delta)
         print(f"Motion gain: {self.gain:.1f}")
 
+    def set_gain(self, gain: float) -> None:
+        self.gain = max(0.0, gain)
+        print(f"Motion gain: {self.gain:.1f}")
+
     def apply(self, img: np.ndarray) -> np.ndarray:
         if not self.enabled:
             return img
@@ -349,8 +359,25 @@ def draw_gain_buttons(display: np.ndarray, gain: float) -> None:
         cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
         put_centered_text(display, label, rect, font_scale=0.75)
 
-    value_rect = (GAIN_DOWN_BUTTON[2], GAIN_DOWN_BUTTON[1], GAIN_UP_BUTTON[0], GAIN_UP_BUTTON[3])
-    put_centered_text(display, f"{gain:.1f}", value_rect, font_scale=0.55)
+    put_centered_text(display, f"{gain:.1f}", GAIN_VALUE_RECT, font_scale=0.55)
+
+
+def prompt_motion_gain(motion: MotionState) -> None:
+    """Prompt in the terminal for an exact motion gain value."""
+    try:
+        value = input(f"Enter motion gain [{motion.gain:.1f}]: ").strip()
+    except EOFError:
+        print("Motion gain unchanged.")
+        return
+
+    if not value:
+        print("Motion gain unchanged.")
+        return
+
+    try:
+        motion.set_gain(float(value))
+    except ValueError:
+        print(f"Invalid motion gain: {value!r}")
 
 
 def draw_view_button(display: np.ndarray, warp_enabled: bool) -> None:
@@ -478,7 +505,7 @@ def main() -> None:
     print("Press q in the OpenCV window to quit.")
     print("Click WARP VIEW/RAW VIEW in the OpenCV window, or press w, to switch display modes.")
     print("Click MOTION ON/OFF in the OpenCV window, or press m, to toggle background subtraction.")
-    print("Click -/+ in the OpenCV window, or press [ and ], to adjust motion gain.")
+    print("Click -/+/gain value in the OpenCV window, or press [, ], and g, to adjust motion gain.")
     print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
@@ -498,6 +525,11 @@ def main() -> None:
         x1, y1, x2, y2 = GAIN_DOWN_BUTTON
         if x1 <= x <= x2 and y1 <= y <= y2:
             motion.adjust_gain(-MOTION_GAIN_STEP)
+            return
+
+        x1, y1, x2, y2 = GAIN_VALUE_RECT
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            prompt_motion_gain(motion)
             return
 
         x1, y1, x2, y2 = GAIN_UP_BUTTON
@@ -535,7 +567,8 @@ def main() -> None:
         if img is None:
             return
 
-        raw_record_frame = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        raw_view_img = rotate_raw_view(img)
+        raw_record_frame = cv2.cvtColor(raw_view_img, cv2.COLOR_GRAY2BGR)
 
         frame_count += 1
         elapsed = max(0.001, time.time() - t0)
@@ -561,7 +594,7 @@ def main() -> None:
             display_img = motion.apply(warped)
             display = colorize_for_cv2(display_img, args.colorscheme)
         else:
-            display_img = motion.apply(img)
+            display_img = motion.apply(raw_view_img)
             display = cv2.cvtColor(display_img, cv2.COLOR_GRAY2BGR)
 
         cv2.putText(
@@ -589,7 +622,7 @@ def main() -> None:
 
         if args.save:
             out = args.save / f"frame_{frame_id:06d}.jpg"
-            out.write_bytes(jpg)
+            cv2.imwrite(str(out), raw_view_img)
             if view.warp_enabled:
                 warped_out = args.save / f"frame_{frame_id:06d}_xy.png"
                 cv2.imwrite(str(warped_out), display)
@@ -605,6 +638,8 @@ def main() -> None:
             motion.adjust_gain(-MOTION_GAIN_STEP)
         if key == ord("]"):
             motion.adjust_gain(MOTION_GAIN_STEP)
+        if key == ord("g"):
+            prompt_motion_gain(motion)
         if key == ord("q"):
             raise KeyboardInterrupt
 
