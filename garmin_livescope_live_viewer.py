@@ -221,9 +221,11 @@ class RecordingState:
     base_path: Path
     fps: float
     label: str
+    auto_segment_seconds: Optional[float] = None
     writer: Optional[cv2.VideoWriter] = None
     active_path: Optional[Path] = None
     frame_size: Optional[Tuple[int, int]] = None
+    segment_started_at: Optional[float] = None
     clip_index: int = 0
     requested: bool = False
 
@@ -235,14 +237,25 @@ class RecordingState:
         self.requested = not self.requested
 
     def sync(self, frame_size: Tuple[int, int]) -> None:
-        if self.requested and self.writer is None:
-            self.clip_index += 1
-            self.active_path = video_clip_path(self.base_path, self.clip_index)
-            self.frame_size = frame_size
-            self.writer = make_video_writer(self.active_path, self.fps, frame_size)
-            print(f"Recording {self.label} to {self.active_path}")
-        elif not self.requested and self.writer is not None:
+        now = time.time()
+        auto_active = self.auto_segment_seconds is not None and self.auto_segment_seconds > 0
+
+        if auto_active and self.writer is not None and self.segment_started_at is not None:
+            if now - self.segment_started_at >= self.auto_segment_seconds:
+                self.stop()
+
+        if (self.requested or auto_active) and self.writer is None:
+            self.start(frame_size, now)
+        elif not self.requested and not auto_active and self.writer is not None:
             self.stop()
+
+    def start(self, frame_size: Tuple[int, int], started_at: Optional[float] = None) -> None:
+        self.clip_index += 1
+        self.active_path = video_clip_path(self.base_path, self.clip_index)
+        self.frame_size = frame_size
+        self.segment_started_at = time.time() if started_at is None else started_at
+        self.writer = make_video_writer(self.active_path, self.fps, frame_size)
+        print(f"Recording {self.label} to {self.active_path}")
 
     def write(self, frame: np.ndarray) -> None:
         if self.writer is not None:
@@ -258,6 +271,7 @@ class RecordingState:
         self.writer.release()
         self.writer = None
         self.frame_size = None
+        self.segment_started_at = None
         print(f"Video saved: {self.active_path}")
 
 
@@ -545,6 +559,9 @@ def main() -> None:
     parser.add_argument("--record-video", type=Path, default=Path("livescope.mp4"), help="Output path for the START REC button; default: livescope.mp4")
     parser.add_argument("--record-echogram", type=Path, default=Path("echogram.mp4"), help="Output path for the echogram START REC button; default: echogram.mp4")
     parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into recorded video; default: 20")
+    parser.add_argument("--autosave-raw", action="store_true", help="Automatically record raw footage in rolling segments")
+    parser.add_argument("--autosave-echogram", action="store_true", help="Automatically record echogram footage in rolling segments")
+    parser.add_argument("--autosave-minutes", type=float, default=10.0, help="Autosave segment length in minutes; default: 10")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
     parser.add_argument("--warp-xy", action="store_true", help="Start in warped theta/range X/Y fan view")
     parser.add_argument("--width", type=int, default=900, help="warped output width when --warp-xy is enabled")
@@ -585,8 +602,19 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
-    recording = RecordingState(args.record_video, args.video_fps, label="raw footage")
-    echogram_recording = RecordingState(args.record_echogram, args.video_fps, label="echogram footage")
+    autosave_seconds = max(1.0, args.autosave_minutes * 60.0)
+    recording = RecordingState(
+        args.record_video,
+        args.video_fps,
+        label="raw footage",
+        auto_segment_seconds=autosave_seconds if args.autosave_raw else None,
+    )
+    echogram_recording = RecordingState(
+        args.record_echogram,
+        args.video_fps,
+        label="echogram footage",
+        auto_segment_seconds=autosave_seconds if args.autosave_echogram else None,
+    )
     view = ViewState(warp_enabled=args.warp_xy)
     echogram = None if args.no_echogram else EchogramState(
         width=args.echogram_width,
@@ -612,6 +640,10 @@ def main() -> None:
     print("Click MOTION ON/OFF in the OpenCV window, or press m, to toggle background subtraction.")
     print("Click -/+/gain value in the OpenCV window, or press [, ], and g, to adjust motion gain.")
     print("Click START REC in the main OpenCV window, or press r, to start/stop raw recording.")
+    if args.autosave_raw:
+        print(f"Autosaving raw footage every {args.autosave_minutes:g} minute(s) to {args.record_video}")
+    if args.autosave_echogram:
+        print(f"Autosaving echogram footage every {args.autosave_minutes:g} minute(s) to {args.record_echogram}")
     if echogram is not None:
         print("Showing scrolling echogram in a second OpenCV window. Its START REC button records echogram footage.")
 

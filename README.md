@@ -140,7 +140,21 @@ The echogram window records separately to `echogram.mp4` by default:
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-echogram echogram.mp4
 ```
 
-Click `START REC` in the echogram window to record echogram footage only. If echogram motion is enabled, the echogram recording includes that filtered view. You can also press `e` while an OpenCV window is focused.
+Click `START REC` in the echogram window to record echogram footage only. The echogram recording includes the automatic background-subtracted view. You can also press `e` while an OpenCV window is focused.
+
+For automatic 10-minute autosave segments, use:
+
+```bash
+sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --autosave-raw --autosave-echogram
+```
+
+Autosave uses `livescope.mp4`, `livescope_002.mp4`, etc. for raw footage and `echogram.mp4`, `echogram_002.mp4`, etc. for echogram footage. Change the paths or segment length with:
+
+```bash
+--record-video raw.mp4
+--record-echogram echo.mp4
+--autosave-minutes 10
+```
 
 Start the viewer in warped view while still recording raw footage:
 
