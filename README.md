@@ -82,6 +82,21 @@ Lower `--motion-threshold` shows weaker movement but may show more noise. Higher
 
 The OpenCV window is created only after the first complete frame is decoded. If the script says it is listening but no window appears, it may not be receiving Garmin chunks on that interface yet.
 
+The viewer also opens a second `Garmin LiveScope Echogram` window by default. It scrolls over time, adding one range-history column per decoded frame. The echogram window has its own `START REC` / `STOP REC` button that records echogram footage only. Hide it with:
+
+```bash
+sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --no-echogram
+```
+
+Useful echogram options:
+
+```bash
+--echogram-width 700
+--echogram-height 512
+--echogram-mode max
+--echogram-mode mean
+```
+
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
 
 ### Save Frames
@@ -107,15 +122,23 @@ The viewer always shows these controls:
 - `MOTION ON` / `MOTION OFF`: show recent changes while suppressing static background.
 - `-` / `+`: lower or raise motion gain.
 
-By default, recordings are written to `livescope.mp4`. To choose a different output path:
+By default, the main LiveScope recording is written to `livescope.mp4`. To choose a different raw output path:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-video livescope.mp4
 ```
 
-Click `START REC` to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
+Click `START REC` in the main LiveScope window to start raw recording, click `STOP REC` to stop. You can also press `r` while an OpenCV window is focused.
 
 You can switch between raw and warped view while recording. The saved video always records the rotated raw decoded Garmin footage, without the warped display or on-screen buttons.
+
+The echogram window records separately to `echogram.mp4` by default:
+
+```bash
+sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-echogram echogram.mp4
+```
+
+Click `START REC` in the echogram window to record echogram footage only. You can also press `e` while an OpenCV window is focused.
 
 Start the viewer in warped view while still recording raw footage:
 

@@ -41,6 +41,7 @@ from warp_garmin_polar_to_xy import COLOR_SCHEMES, apply_color_scheme, bilinear_
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
 WINDOW_NAME = "Garmin GLS 10 LiveScope"
+ECHOGRAM_WINDOW_NAME = "Garmin LiveScope Echogram"
 RECORD_BUTTON = (10, 42, 126, 78)
 VIEW_BUTTON = (136, 42, 252, 78)
 MOTION_BUTTON = (262, 42, 390, 78)
@@ -219,6 +220,7 @@ def video_clip_path(base_path: Path, clip_index: int) -> Path:
 class RecordingState:
     base_path: Path
     fps: float
+    label: str
     writer: Optional[cv2.VideoWriter] = None
     active_path: Optional[Path] = None
     frame_size: Optional[Tuple[int, int]] = None
@@ -226,6 +228,10 @@ class RecordingState:
     requested: bool = False
 
     def toggle_requested(self) -> None:
+        if self.writer is not None:
+            self.requested = False
+            self.stop()
+            return
         self.requested = not self.requested
 
     def sync(self, frame_size: Tuple[int, int]) -> None:
@@ -234,7 +240,7 @@ class RecordingState:
             self.active_path = video_clip_path(self.base_path, self.clip_index)
             self.frame_size = frame_size
             self.writer = make_video_writer(self.active_path, self.fps, frame_size)
-            print(f"Recording raw footage to {self.active_path}")
+            print(f"Recording {self.label} to {self.active_path}")
         elif not self.requested and self.writer is not None:
             self.stop()
 
@@ -253,6 +259,34 @@ class RecordingState:
         self.writer = None
         self.frame_size = None
         print(f"Video saved: {self.active_path}")
+
+
+@dataclass
+class EchogramState:
+    width: int
+    height: int
+    mode: str = "max"
+    image: Optional[np.ndarray] = None
+
+    def __post_init__(self) -> None:
+        self.width = max(1, self.width)
+        self.height = max(1, self.height)
+        self.image = np.zeros((self.height, self.width), dtype=np.uint8)
+
+    def add_frame(self, polar_img: np.ndarray) -> np.ndarray:
+        """Append one time column derived from the frame's range profile."""
+        if self.image is None:
+            self.image = np.zeros((self.height, self.width), dtype=np.uint8)
+
+        if self.mode == "mean":
+            profile = np.mean(polar_img, axis=0).astype(np.uint8)
+        else:
+            profile = np.max(polar_img, axis=0).astype(np.uint8)
+
+        column = cv2.resize(profile[:, None], (1, self.height), interpolation=cv2.INTER_AREA)[:, 0]
+        self.image[:, :-1] = self.image[:, 1:]
+        self.image[:, -1] = column
+        return cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
 
 
 @dataclass
@@ -458,6 +492,7 @@ def main() -> None:
     parser.add_argument("--stream", default="0x00060044", help="Stream ID hex, or 'all'")
     parser.add_argument("--save", type=Path, default=None, help="Optional folder to save JPEG frames")
     parser.add_argument("--record-video", type=Path, default=Path("livescope.mp4"), help="Output path for the START REC button; default: livescope.mp4")
+    parser.add_argument("--record-echogram", type=Path, default=Path("echogram.mp4"), help="Output path for the echogram START REC button; default: echogram.mp4")
     parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into recorded video; default: 20")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
     parser.add_argument("--warp-xy", action="store_true", help="Start in warped theta/range X/Y fan view")
@@ -473,6 +508,10 @@ def main() -> None:
     parser.add_argument("--motion-alpha", type=float, default=0.04, help="Background learning rate for motion view; default: 0.04")
     parser.add_argument("--motion-threshold", type=int, default=14, help="Minimum brightness change shown in motion view; default: 14")
     parser.add_argument("--motion-gain", type=float, default=4.0, help="Brightness gain applied to motion differences; default: 4.0")
+    parser.add_argument("--no-echogram", action="store_true", help="Disable the second scrolling echogram window")
+    parser.add_argument("--echogram-width", type=int, default=700, help="Scrolling echogram window width; default: 700")
+    parser.add_argument("--echogram-height", type=int, default=512, help="Scrolling echogram window height; default: 512")
+    parser.add_argument("--echogram-mode", choices=("max", "mean"), default="max", help="Range profile reducer for echogram columns; default: max")
     parser.add_argument(
         "--colorscheme",
         "--colourscheme",
@@ -492,8 +531,14 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
-    recording = RecordingState(args.record_video, args.video_fps)
+    recording = RecordingState(args.record_video, args.video_fps, label="raw footage")
+    echogram_recording = RecordingState(args.record_echogram, args.video_fps, label="echogram footage")
     view = ViewState(warp_enabled=args.warp_xy)
+    echogram = None if args.no_echogram else EchogramState(
+        width=args.echogram_width,
+        height=args.echogram_height,
+        mode=args.echogram_mode,
+    )
     motion = MotionState(
         enabled=args.motion,
         alpha=float(np.clip(args.motion_alpha, 0.0, 1.0)),
@@ -506,7 +551,9 @@ def main() -> None:
     print("Click WARP VIEW/RAW VIEW in the OpenCV window, or press w, to switch display modes.")
     print("Click MOTION ON/OFF in the OpenCV window, or press m, to toggle background subtraction.")
     print("Click -/+/gain value in the OpenCV window, or press [, ], and g, to adjust motion gain.")
-    print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
+    print("Click START REC in the main OpenCV window, or press r, to start/stop raw recording.")
+    if echogram is not None:
+        print("Showing scrolling echogram in a second OpenCV window. Its START REC button records echogram footage.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -542,8 +589,22 @@ def main() -> None:
             if x1 <= x <= x2 and y1 <= y <= y2:
                 recording.toggle_requested()
 
+    def on_echogram_mouse(event, x, y, _flags, _param) -> None:
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+
+        x1, y1, x2, y2 = RECORD_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            echogram_recording.toggle_requested()
+
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(WINDOW_NAME, on_mouse)
+    cv2.moveWindow(WINDOW_NAME, 20, 40)
+    if echogram is not None:
+        cv2.namedWindow(ECHOGRAM_WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(ECHOGRAM_WINDOW_NAME, on_echogram_mouse)
+        cv2.resizeWindow(ECHOGRAM_WINDOW_NAME, echogram.width, echogram.height)
+        cv2.moveWindow(ECHOGRAM_WINDOW_NAME, 560, 40)
 
     bpf = "udp"
     if args.udp_port is not None:
@@ -566,6 +627,17 @@ def main() -> None:
         img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
         if img is None:
             return
+
+        if echogram is not None:
+            echogram_display = echogram.add_frame(img)
+            echogram_recording.sync((echogram_display.shape[1], echogram_display.shape[0]))
+            echogram_recording.write(echogram_display)
+            draw_record_button(
+                echogram_display,
+                recording_enabled=True,
+                recording=echogram_recording.writer is not None,
+            )
+            cv2.imshow(ECHOGRAM_WINDOW_NAME, echogram_display)
 
         raw_view_img = rotate_raw_view(img)
         raw_record_frame = cv2.cvtColor(raw_view_img, cv2.COLOR_GRAY2BGR)
@@ -630,6 +702,8 @@ def main() -> None:
         key = cv2.waitKey(1) & 0xFF
         if key == ord("r") and recording:
             recording.toggle_requested()
+        if key == ord("e") and echogram is not None:
+            echogram_recording.toggle_requested()
         if key == ord("w"):
             view.toggle()
         if key == ord("m"):
@@ -650,6 +724,8 @@ def main() -> None:
     finally:
         if recording is not None:
             recording.stop()
+        if echogram is not None:
+            echogram_recording.stop()
         cv2.destroyAllWindows()
 
 
