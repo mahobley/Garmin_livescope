@@ -56,6 +56,8 @@ Warped X/Y fan view:
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy
 ```
 
+The viewer has a `WARP VIEW` / `RAW VIEW` button. Click it to switch between the raw Garmin JPEG and the warped X/Y fan view while the script is running. You can also press `w` while the OpenCV window is focused. `--warp-xy` only chooses the starting view.
+
 The OpenCV window is created only after the first complete frame is decoded. If the script says it is listening but no window appears, it may not be receiving Garmin chunks on that interface yet.
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
@@ -76,13 +78,20 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy 
 
 ### Record Video
 
-Enable button-controlled MP4 recording of the displayed view:
+The viewer always shows both controls:
+
+- `START REC` / `STOP REC`: start or stop video recording.
+- `WARP VIEW` / `RAW VIEW`: switch between raw and warped display.
+
+By default, recordings are written to `livescope.mp4`. To choose a different output path:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-video livescope.mp4
 ```
 
-The viewer will show a `START REC` button in the OpenCV window. Click it to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
+Click `START REC` to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
+
+You can switch between raw and warped view while recording. The current video clip keeps recording; if the display size changes, frames are resized to the clip size that was chosen when recording started.
 
 Enable recording for the warped view:
 

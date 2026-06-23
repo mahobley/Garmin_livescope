@@ -42,6 +42,7 @@ JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
 WINDOW_NAME = "Garmin GLS 10 LiveScope"
 RECORD_BUTTON = (10, 42, 150, 84)
+VIEW_BUTTON = (160, 42, 300, 84)
 
 
 @dataclass
@@ -210,6 +211,7 @@ class RecordingState:
     fps: float
     writer: Optional[cv2.VideoWriter] = None
     active_path: Optional[Path] = None
+    frame_size: Optional[Tuple[int, int]] = None
     clip_index: int = 0
     requested: bool = False
 
@@ -220,6 +222,7 @@ class RecordingState:
         if self.requested and self.writer is None:
             self.clip_index += 1
             self.active_path = video_clip_path(self.base_path, self.clip_index)
+            self.frame_size = frame_size
             self.writer = make_video_writer(self.active_path, self.fps, frame_size)
             print(f"Recording displayed view to {self.active_path}")
         elif not self.requested and self.writer is not None:
@@ -227,6 +230,10 @@ class RecordingState:
 
     def write(self, frame: np.ndarray) -> None:
         if self.writer is not None:
+            if self.frame_size is not None:
+                width, height = self.frame_size
+                if frame.shape[1] != width or frame.shape[0] != height:
+                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             self.writer.write(frame)
 
     def stop(self) -> None:
@@ -234,7 +241,18 @@ class RecordingState:
             return
         self.writer.release()
         self.writer = None
+        self.frame_size = None
         print(f"Video saved: {self.active_path}")
+
+
+@dataclass
+class ViewState:
+    warp_enabled: bool
+
+    def toggle(self) -> None:
+        self.warp_enabled = not self.warp_enabled
+        mode = "warped X/Y" if self.warp_enabled else "raw Garmin JPEG"
+        print(f"Display mode: {mode}")
 
 
 def draw_record_button(display: np.ndarray, recording_enabled: bool, recording: bool) -> None:
@@ -245,6 +263,25 @@ def draw_record_button(display: np.ndarray, recording_enabled: bool, recording: 
     x1, y1, x2, y2 = RECORD_BUTTON
     fill = (32, 32, 180) if recording else (40, 120, 40)
     label = "STOP REC" if recording else "START REC"
+
+    cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
+    cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
+    cv2.putText(
+        display,
+        label,
+        (x1 + 10, y1 + 27),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2,
+    )
+
+
+def draw_view_button(display: np.ndarray, warp_enabled: bool) -> None:
+    """Draw a clickable raw/warped view toggle onto the OpenCV frame."""
+    x1, y1, x2, y2 = VIEW_BUTTON
+    fill = (110, 70, 30) if warp_enabled else (80, 80, 80)
+    label = "RAW VIEW" if warp_enabled else "WARP VIEW"
 
     cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
     cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
@@ -325,10 +362,10 @@ def main() -> None:
     parser.add_argument("--iface", required=True, help="Network interface, e.g. en0, eth0, Ethernet")
     parser.add_argument("--stream", default="0x00060044", help="Stream ID hex, or 'all'")
     parser.add_argument("--save", type=Path, default=None, help="Optional folder to save JPEG frames")
-    parser.add_argument("--record-video", type=Path, default=None, help="Enable button-controlled video recording to this path")
-    parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into --record-video; default: 20")
+    parser.add_argument("--record-video", type=Path, default=Path("livescope.mp4"), help="Output path for the START REC button; default: livescope.mp4")
+    parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into recorded video; default: 20")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
-    parser.add_argument("--warp-xy", action="store_true", help="Warp theta/range frames into an X/Y fan view")
+    parser.add_argument("--warp-xy", action="store_true", help="Start in warped theta/range X/Y fan view")
     parser.add_argument("--width", type=int, default=900, help="warped output width when --warp-xy is enabled")
     parser.add_argument("--height", type=int, default=900, help="warped output height when --warp-xy is enabled")
     parser.add_argument("--max-range", type=float, default=None, help="real-world max range; otherwise range units are source bins")
@@ -356,22 +393,30 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
-    recording = RecordingState(args.record_video, args.video_fps) if args.record_video else None
+    recording = RecordingState(args.record_video, args.video_fps)
+    view = ViewState(warp_enabled=args.warp_xy)
 
     print("Listening for Garmin LiveScope packets...")
     print("Press q in the OpenCV window to quit.")
-    if recording:
-        print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
+    print("Click WARP VIEW/RAW VIEW in the OpenCV window, or press w, to switch display modes.")
+    print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
 
-        def on_mouse(event, x, y, _flags, _param) -> None:
-            if event != cv2.EVENT_LBUTTONDOWN:
-                return
+    def on_mouse(event, x, y, _flags, _param) -> None:
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+
+        x1, y1, x2, y2 = VIEW_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            view.toggle()
+            return
+
+        if recording is not None:
             x1, y1, x2, y2 = RECORD_BUTTON
             if x1 <= x <= x2 and y1 <= y <= y2:
                 recording.toggle_requested()
 
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback(WINDOW_NAME, on_mouse)
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(WINDOW_NAME, on_mouse)
 
     bpf = "udp"
     if args.udp_port is not None:
@@ -399,7 +444,7 @@ def main() -> None:
         elapsed = max(0.001, time.time() - t0)
         fps = frame_count / elapsed
 
-        if args.warp_xy:
+        if view.warp_enabled:
             try:
                 warped = polar_image_to_xy(
                     img,
@@ -434,6 +479,10 @@ def main() -> None:
             height, width = display.shape[:2]
             recording.sync((width, height))
             draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
+
+        draw_view_button(display, warp_enabled=view.warp_enabled)
+
+        if recording:
             recording.write(display)
 
         cv2.imshow(WINDOW_NAME, display)
@@ -441,13 +490,15 @@ def main() -> None:
         if args.save:
             out = args.save / f"frame_{frame_id:06d}.jpg"
             out.write_bytes(jpg)
-            if args.warp_xy:
+            if view.warp_enabled:
                 warped_out = args.save / f"frame_{frame_id:06d}_xy.png"
                 cv2.imwrite(str(warped_out), display)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord("r") and recording:
             recording.toggle_requested()
+        if key == ord("w"):
+            view.toggle()
         if key == ord("q"):
             raise KeyboardInterrupt
 
