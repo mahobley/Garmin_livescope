@@ -82,7 +82,7 @@ Lower `--motion-threshold` shows weaker movement but may show more noise. Higher
 
 The OpenCV window is created only after the first complete frame is decoded. If the script says it is listening but no window appears, it may not be receiving Garmin chunks on that interface yet.
 
-The viewer also opens a second `Garmin LiveScope Echogram` window by default. It scrolls over time, adding one range-history column per decoded frame. The echogram window has its own `START REC` / `STOP REC` button that records echogram footage only, plus its own `MOTION ON` / `MOTION OFF` background subtraction button. Hide it with:
+The viewer also opens a second `Garmin LiveScope Echogram` window by default. It scrolls over time, adding one range-history column per decoded frame. Echogram background subtraction is always applied automatically. Brightness shows changing return strength, and color is automatically mapped from the beam/angle that produced the return: red = left, green = center, blue = right. The echogram window has its own `START REC` / `STOP REC` button that records echogram footage only. Hide it with:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --no-echogram
@@ -95,12 +95,9 @@ Useful echogram options:
 --echogram-height 512
 --echogram-mode max
 --echogram-mode mean
---echogram-motion
 --echogram-motion-threshold 14
 --echogram-motion-gain 4.0
 ```
-
-Press `b` to toggle echogram background subtraction from the keyboard.
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
 

@@ -267,26 +267,77 @@ class EchogramState:
     height: int
     mode: str = "max"
     image: Optional[np.ndarray] = None
+    color_image: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         self.width = max(1, self.width)
         self.height = max(1, self.height)
         self.image = np.zeros((self.height, self.width), dtype=np.uint8)
+        self.color_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
-    def add_frame(self, polar_img: np.ndarray) -> np.ndarray:
+    def add_frame(self, polar_img: np.ndarray, prejpg: Optional[bytes] = None) -> np.ndarray:
         """Append one time column derived from the frame's range profile."""
         if self.image is None:
             self.image = np.zeros((self.height, self.width), dtype=np.uint8)
+        if self.color_image is None:
+            self.color_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
         if self.mode == "mean":
             profile = np.mean(polar_img, axis=0).astype(np.uint8)
+            weights = polar_img.astype(np.float32)
+            row_values = np.arange(polar_img.shape[0], dtype=np.float32)[:, None]
+            weight_sum = np.maximum(np.sum(weights, axis=0), 1.0)
+            angle_rows = np.sum(weights * row_values, axis=0) / weight_sum
         else:
             profile = np.max(polar_img, axis=0).astype(np.uint8)
+            angle_rows = np.argmax(polar_img, axis=0).astype(np.float32)
 
         column = cv2.resize(profile[:, None], (1, self.height), interpolation=cv2.INTER_AREA)[:, 0]
+        theta = self._theta_for_frame(polar_img, prejpg)
+        angle_values = np.interp(angle_rows, np.arange(polar_img.shape[0], dtype=np.float32), theta)
+        color_profile = self._angle_colors_bgr(angle_values)
+        color_column = cv2.resize(color_profile[:, None, :], (1, self.height), interpolation=cv2.INTER_NEAREST)[:, 0, :]
         self.image[:, :-1] = self.image[:, 1:]
         self.image[:, -1] = column
+        self.color_image[:, :-1, :] = self.color_image[:, 1:, :]
+        self.color_image[:, -1, :] = color_column
         return self.image.copy()
+
+    def render(self, intensity: Optional[np.ndarray] = None) -> np.ndarray:
+        """Render the echogram with color carrying source-angle information."""
+        if self.image is None:
+            self.image = np.zeros((self.height, self.width), dtype=np.uint8)
+        if self.color_image is None:
+            self.color_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+        value = self.image if intensity is None else intensity
+        scale = value.astype(np.float32)[..., None] / 255.0
+        return np.clip(self.color_image.astype(np.float32) * scale, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _theta_for_frame(polar_img: np.ndarray, prejpg: Optional[bytes]) -> np.ndarray:
+        if prejpg is not None:
+            try:
+                return read_theta_table_from_prejpg(prejpg, n_theta=polar_img.shape[0])
+            except ValueError:
+                pass
+        return np.linspace(-1.0, 1.0, polar_img.shape[0], dtype=np.float64)
+
+    @staticmethod
+    def _angle_colors_bgr(theta: np.ndarray) -> np.ndarray:
+        max_abs = max(float(np.max(np.abs(theta))), 1e-6)
+        t = np.clip(theta / max_abs, -1.0, 1.0)
+        colors = np.zeros((theta.shape[0], 3), dtype=np.float32)
+
+        left = t < 0
+        colors[left, 1] = (1.0 + t[left]) * 255.0
+        colors[left, 2] = 255.0
+
+        right = ~left
+        colors[right, 0] = t[right] * 255.0
+        colors[right, 1] = (1.0 - t[right]) * 255.0
+
+        return colors.astype(np.uint8)
 
 
 @dataclass
@@ -512,7 +563,6 @@ def main() -> None:
     parser.add_argument("--echogram-width", type=int, default=700, help="Scrolling echogram window width; default: 700")
     parser.add_argument("--echogram-height", type=int, default=512, help="Scrolling echogram window height; default: 512")
     parser.add_argument("--echogram-mode", choices=("max", "mean"), default="max", help="Range profile reducer for echogram columns; default: max")
-    parser.add_argument("--echogram-motion", action="store_true", help="Start echogram window with background subtraction enabled")
     parser.add_argument("--echogram-motion-alpha", type=float, default=0.04, help="Echogram background learning rate; default: 0.04")
     parser.add_argument("--echogram-motion-threshold", type=int, default=14, help="Minimum echogram brightness change shown; default: 14")
     parser.add_argument("--echogram-motion-gain", type=float, default=4.0, help="Brightness gain for echogram differences; default: 4.0")
@@ -550,7 +600,7 @@ def main() -> None:
         gain=max(0.0, args.motion_gain),
     )
     echogram_motion = MotionState(
-        enabled=args.echogram_motion,
+        enabled=True,
         alpha=float(np.clip(args.echogram_motion_alpha, 0.0, 1.0)),
         threshold=max(0, args.echogram_motion_threshold),
         gain=max(0.0, args.echogram_motion_gain),
@@ -564,7 +614,6 @@ def main() -> None:
     print("Click START REC in the main OpenCV window, or press r, to start/stop raw recording.")
     if echogram is not None:
         print("Showing scrolling echogram in a second OpenCV window. Its START REC button records echogram footage.")
-        print("Click MOTION ON/OFF in the echogram window, or press b, to toggle echogram background subtraction.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -609,10 +658,6 @@ def main() -> None:
             echogram_recording.toggle_requested()
             return
 
-        x1, y1, x2, y2 = MOTION_BUTTON
-        if x1 <= x <= x2 and y1 <= y <= y2:
-            echogram_motion.toggle()
-
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(WINDOW_NAME, on_mouse)
     cv2.moveWindow(WINDOW_NAME, 20, 40)
@@ -645,9 +690,9 @@ def main() -> None:
             return
 
         if echogram is not None:
-            echogram_img = echogram.add_frame(img)
+            echogram_img = echogram.add_frame(img, prejpg)
             echogram_img = echogram_motion.apply(echogram_img)
-            echogram_display = cv2.cvtColor(echogram_img, cv2.COLOR_GRAY2BGR)
+            echogram_display = echogram.render(echogram_img)
             echogram_recording.sync((echogram_display.shape[1], echogram_display.shape[0]))
             echogram_recording.write(echogram_display)
             draw_record_button(
@@ -655,7 +700,6 @@ def main() -> None:
                 recording_enabled=True,
                 recording=echogram_recording.writer is not None,
             )
-            draw_motion_button(echogram_display, motion_enabled=echogram_motion.enabled)
             cv2.imshow(ECHOGRAM_WINDOW_NAME, echogram_display)
 
         raw_view_img = rotate_raw_view(img)
@@ -723,8 +767,6 @@ def main() -> None:
             recording.toggle_requested()
         if key == ord("e") and echogram is not None:
             echogram_recording.toggle_requested()
-        if key == ord("b") and echogram is not None:
-            echogram_motion.toggle()
         if key == ord("w"):
             view.toggle()
         if key == ord("m"):
