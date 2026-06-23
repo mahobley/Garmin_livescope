@@ -440,6 +440,8 @@ def main() -> None:
         if img is None:
             return
 
+        raw_record_frame = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
         frame_count += 1
         elapsed = max(0.001, time.time() - t0)
         fps = frame_count / elapsed
@@ -476,14 +478,13 @@ def main() -> None:
         )
 
         if recording:
-            height, width = display.shape[:2]
+            height, width = raw_record_frame.shape[:2]
             recording.sync((width, height))
-            draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
-
-        draw_view_button(display, warp_enabled=view.warp_enabled)
+            recording.write(raw_record_frame)
 
         if recording:
-            recording.write(display)
+            draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
+        draw_view_button(display, warp_enabled=view.warp_enabled)
 
         cv2.imshow(WINDOW_NAME, display)
 

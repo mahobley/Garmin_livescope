@@ -91,9 +91,9 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --record-v
 
 Click `START REC` to start recording, click `STOP REC` to stop. You can also press `r` while the OpenCV window is focused.
 
-You can switch between raw and warped view while recording. The current video clip keeps recording; if the display size changes, frames are resized to the clip size that was chosen when recording started.
+You can switch between raw and warped view while recording. The saved video always records the raw decoded Garmin footage, without the warped display or on-screen buttons.
 
-Enable recording for the warped view:
+Start the viewer in warped view while still recording raw footage:
 
 ```bash
 sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy --record-video livescope_xy.mp4
