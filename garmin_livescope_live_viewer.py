@@ -41,8 +41,12 @@ from warp_garmin_polar_to_xy import COLOR_SCHEMES, apply_color_scheme, bilinear_
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
 WINDOW_NAME = "Garmin GLS 10 LiveScope"
-RECORD_BUTTON = (10, 42, 150, 84)
-VIEW_BUTTON = (160, 42, 300, 84)
+RECORD_BUTTON = (10, 42, 126, 78)
+VIEW_BUTTON = (136, 42, 252, 78)
+MOTION_BUTTON = (262, 42, 390, 78)
+GAIN_DOWN_BUTTON = (10, 86, 48, 122)
+GAIN_UP_BUTTON = (112, 86, 150, 122)
+MOTION_GAIN_STEP = 0.5
 
 
 @dataclass
@@ -224,7 +228,7 @@ class RecordingState:
             self.active_path = video_clip_path(self.base_path, self.clip_index)
             self.frame_size = frame_size
             self.writer = make_video_writer(self.active_path, self.fps, frame_size)
-            print(f"Recording displayed view to {self.active_path}")
+            print(f"Recording raw footage to {self.active_path}")
         elif not self.requested and self.writer is not None:
             self.stop()
 
@@ -255,6 +259,63 @@ class ViewState:
         print(f"Display mode: {mode}")
 
 
+@dataclass
+class MotionState:
+    enabled: bool
+    alpha: float
+    threshold: int
+    gain: float
+    background: Optional[np.ndarray] = None
+
+    def toggle(self) -> None:
+        self.enabled = not self.enabled
+        self.background = None
+        mode = "on" if self.enabled else "off"
+        print(f"Motion filter: {mode}")
+
+    def adjust_gain(self, delta: float) -> None:
+        self.gain = max(0.0, self.gain + delta)
+        print(f"Motion gain: {self.gain:.1f}")
+
+    def apply(self, img: np.ndarray) -> np.ndarray:
+        if not self.enabled:
+            return img
+
+        current = img.astype(np.float32)
+        if self.background is None or self.background.shape != current.shape:
+            self.background = current.copy()
+            return np.zeros_like(img)
+
+        diff = cv2.absdiff(current, self.background)
+        cv2.accumulateWeighted(current, self.background, self.alpha)
+
+        motion = np.maximum(diff - float(self.threshold), 0.0) * self.gain
+        return np.clip(motion, 0, 255).astype(np.uint8)
+
+
+def put_centered_text(
+    display: np.ndarray,
+    text: str,
+    rect: Tuple[int, int, int, int],
+    font_scale: float,
+    thickness: int = 2,
+) -> None:
+    """Draw text centered inside a rectangle."""
+    x1, y1, x2, y2 = rect
+    (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    x = x1 + max(0, (x2 - x1 - text_w) // 2)
+    y = y1 + max(text_h, (y2 - y1 + text_h) // 2) - baseline // 2
+    cv2.putText(
+        display,
+        text,
+        (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        font_scale,
+        (255, 255, 255),
+        thickness,
+    )
+
+
 def draw_record_button(display: np.ndarray, recording_enabled: bool, recording: bool) -> None:
     """Draw a simple clickable recording button onto the OpenCV frame."""
     if not recording_enabled:
@@ -266,15 +327,30 @@ def draw_record_button(display: np.ndarray, recording_enabled: bool, recording: 
 
     cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
     cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
-    cv2.putText(
-        display,
-        label,
-        (x1 + 10, y1 + 27),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (255, 255, 255),
-        2,
-    )
+    put_centered_text(display, label, RECORD_BUTTON, font_scale=0.48)
+
+
+def draw_motion_button(display: np.ndarray, motion_enabled: bool) -> None:
+    """Draw a clickable motion/background subtraction toggle."""
+    x1, y1, x2, y2 = MOTION_BUTTON
+    fill = (32, 90, 150) if motion_enabled else (80, 80, 80)
+    label = "MOTION OFF" if motion_enabled else "MOTION ON"
+
+    cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
+    cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
+    put_centered_text(display, label, MOTION_BUTTON, font_scale=0.45)
+
+
+def draw_gain_buttons(display: np.ndarray, gain: float) -> None:
+    """Draw +/- controls for the motion gain."""
+    for rect, label in ((GAIN_DOWN_BUTTON, "-"), (GAIN_UP_BUTTON, "+")):
+        x1, y1, x2, y2 = rect
+        cv2.rectangle(display, (x1, y1), (x2, y2), (70, 70, 70), thickness=-1)
+        cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
+        put_centered_text(display, label, rect, font_scale=0.75)
+
+    value_rect = (GAIN_DOWN_BUTTON[2], GAIN_DOWN_BUTTON[1], GAIN_UP_BUTTON[0], GAIN_UP_BUTTON[3])
+    put_centered_text(display, f"{gain:.1f}", value_rect, font_scale=0.55)
 
 
 def draw_view_button(display: np.ndarray, warp_enabled: bool) -> None:
@@ -285,15 +361,7 @@ def draw_view_button(display: np.ndarray, warp_enabled: bool) -> None:
 
     cv2.rectangle(display, (x1, y1), (x2, y2), fill, thickness=-1)
     cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
-    cv2.putText(
-        display,
-        label,
-        (x1 + 10, y1 + 27),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (255, 255, 255),
-        2,
-    )
+    put_centered_text(display, label, VIEW_BUTTON, font_scale=0.48)
 
 
 class GarminFrameAssembler:
@@ -374,6 +442,10 @@ def main() -> None:
     parser.add_argument("--flip-theta", action="store_true", help="reverse theta rows if left/right is backwards")
     parser.add_argument("--flip-range", action="store_true", help="reverse range columns if near/far is backwards")
     parser.add_argument("--forward-down", action="store_true", help="put forward/far range at bottom instead of top")
+    parser.add_argument("--motion", action="store_true", help="Start with background-subtraction motion view enabled")
+    parser.add_argument("--motion-alpha", type=float, default=0.04, help="Background learning rate for motion view; default: 0.04")
+    parser.add_argument("--motion-threshold", type=int, default=14, help="Minimum brightness change shown in motion view; default: 14")
+    parser.add_argument("--motion-gain", type=float, default=4.0, help="Brightness gain applied to motion differences; default: 4.0")
     parser.add_argument(
         "--colorscheme",
         "--colourscheme",
@@ -395,10 +467,18 @@ def main() -> None:
     t0 = time.time()
     recording = RecordingState(args.record_video, args.video_fps)
     view = ViewState(warp_enabled=args.warp_xy)
+    motion = MotionState(
+        enabled=args.motion,
+        alpha=float(np.clip(args.motion_alpha, 0.0, 1.0)),
+        threshold=max(0, args.motion_threshold),
+        gain=max(0.0, args.motion_gain),
+    )
 
     print("Listening for Garmin LiveScope packets...")
     print("Press q in the OpenCV window to quit.")
     print("Click WARP VIEW/RAW VIEW in the OpenCV window, or press w, to switch display modes.")
+    print("Click MOTION ON/OFF in the OpenCV window, or press m, to toggle background subtraction.")
+    print("Click -/+ in the OpenCV window, or press [ and ], to adjust motion gain.")
     print("Click START REC in the OpenCV window, or press r, to start/stop recording.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
@@ -408,6 +488,21 @@ def main() -> None:
         x1, y1, x2, y2 = VIEW_BUTTON
         if x1 <= x <= x2 and y1 <= y <= y2:
             view.toggle()
+            return
+
+        x1, y1, x2, y2 = MOTION_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            motion.toggle()
+            return
+
+        x1, y1, x2, y2 = GAIN_DOWN_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            motion.adjust_gain(-MOTION_GAIN_STEP)
+            return
+
+        x1, y1, x2, y2 = GAIN_UP_BUTTON
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            motion.adjust_gain(MOTION_GAIN_STEP)
             return
 
         if recording is not None:
@@ -463,9 +558,11 @@ def main() -> None:
             except ValueError as exc:
                 print(f"frame {frame_id}: cannot warp: {exc}")
                 return
-            display = colorize_for_cv2(warped, args.colorscheme)
+            display_img = motion.apply(warped)
+            display = colorize_for_cv2(display_img, args.colorscheme)
         else:
-            display = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            display_img = motion.apply(img)
+            display = cv2.cvtColor(display_img, cv2.COLOR_GRAY2BGR)
 
         cv2.putText(
             display,
@@ -485,6 +582,8 @@ def main() -> None:
         if recording:
             draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
         draw_view_button(display, warp_enabled=view.warp_enabled)
+        draw_motion_button(display, motion_enabled=motion.enabled)
+        draw_gain_buttons(display, gain=motion.gain)
 
         cv2.imshow(WINDOW_NAME, display)
 
@@ -500,6 +599,12 @@ def main() -> None:
             recording.toggle_requested()
         if key == ord("w"):
             view.toggle()
+        if key == ord("m"):
+            motion.toggle()
+        if key == ord("["):
+            motion.adjust_gain(-MOTION_GAIN_STEP)
+        if key == ord("]"):
+            motion.adjust_gain(MOTION_GAIN_STEP)
         if key == ord("q"):
             raise KeyboardInterrupt
 

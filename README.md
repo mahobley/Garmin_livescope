@@ -58,6 +58,26 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy
 
 The viewer has a `WARP VIEW` / `RAW VIEW` button. Click it to switch between the raw Garmin JPEG and the warped X/Y fan view while the script is running. You can also press `w` while the OpenCV window is focused. `--warp-xy` only chooses the starting view.
 
+The viewer also has a `MOTION ON` / `MOTION OFF` button. This removes the slowly changing background and shows only pixels that changed recently. You can also press `m` while the OpenCV window is focused.
+
+Use the on-screen `-` and `+` buttons to lower or raise motion gain live. The gain value is shown between them. Keyboard shortcuts are `[` and `]`.
+
+Start with motion view already enabled:
+
+```bash
+sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --motion
+```
+
+Useful motion tuning flags:
+
+```bash
+--motion-alpha 0.04
+--motion-threshold 14
+--motion-gain 4.0
+```
+
+Lower `--motion-threshold` shows weaker movement but may show more noise. Higher `--motion-gain` makes detected motion brighter. Lower `--motion-alpha` makes the background adapt more slowly.
+
 The OpenCV window is created only after the first complete frame is decoded. If the script says it is listening but no window appears, it may not be receiving Garmin chunks on that interface yet.
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
@@ -78,10 +98,12 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy 
 
 ### Record Video
 
-The viewer always shows both controls:
+The viewer always shows these controls:
 
 - `START REC` / `STOP REC`: start or stop video recording.
 - `WARP VIEW` / `RAW VIEW`: switch between raw and warped display.
+- `MOTION ON` / `MOTION OFF`: show recent changes while suppressing static background.
+- `-` / `+`: lower or raise motion gain.
 
 By default, recordings are written to `livescope.mp4`. To choose a different output path:
 
