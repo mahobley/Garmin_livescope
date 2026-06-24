@@ -11,9 +11,10 @@ Assumption, based on the captures/scripts in this conversation:
       511 little-endian float32 theta values at offset 68
       padding until the JPEG starts
 
-This script works on either:
-  1) A single JPG plus its .prejpg.bin, or
-  2) A directory of frame_XXXXXX.jpg files with matching frame_XXXXXX.prejpg.bin files.
+This script works on:
+  1) A single JPG plus its .prejpg.bin,
+  2) A directory of frame_XXXXXX.jpg files with matching frame_XXXXXX.prejpg.bin files, or
+  3) A saved live-viewer frame_XXXXXX_raw_rotated.png plus frame_XXXXXX_theta.csv.
 
 Example:
   python warp_garmin_polar_to_xy.py garmin_out/frame_000123.jpg --pre garmin_out/frame_000123.prejpg.bin --out frame_000123_xy.png
@@ -29,8 +30,8 @@ Color schemes:
 from __future__ import annotations
 
 import argparse
+import csv
 import math
-import struct
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -72,6 +73,26 @@ def read_theta_table(prejpg_path: Path, n_theta: int, offset: int = 68) -> np.nd
         raise ValueError(f"theta table in {prejpg_path} is not monotonic")
     if np.nanmax(np.abs(theta)) > math.pi * 1.25:
         raise ValueError(f"theta table in {prejpg_path} does not look like radians")
+    return theta
+
+
+def read_theta_csv(theta_csv_path: Path, n_theta: int) -> np.ndarray:
+    """Read theta degrees from a saved live-viewer theta CSV and return radians."""
+    values = []
+    with theta_csv_path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "theta_degrees" not in reader.fieldnames:
+            raise ValueError(f"{theta_csv_path} must contain a theta_degrees column")
+        for row in reader:
+            values.append(float(row["theta_degrees"]))
+
+    if len(values) != n_theta:
+        raise ValueError(f"{theta_csv_path} has {len(values)} theta rows, but image has {n_theta} rows")
+
+    theta = np.radians(np.asarray(values, dtype=np.float64))
+    diffs = np.diff(theta)
+    if not (np.all(diffs > 0) or np.all(diffs < 0)):
+        raise ValueError(f"theta table in {theta_csv_path} is not monotonic")
     return theta
 
 
@@ -126,9 +147,9 @@ def apply_color_scheme(img: np.ndarray, color_scheme: str) -> Image.Image:
     return Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), mode="RGB")
 
 
-def polar_jpeg_to_xy(
-    jpg_path: Path,
-    prejpg_path: Path,
+def polar_image_to_xy(
+    img: np.ndarray,
+    theta: np.ndarray,
     out_path: Path,
     out_width: int = 900,
     out_height: int = 900,
@@ -140,11 +161,11 @@ def polar_jpeg_to_xy(
     forward_is_up: bool = True,
     color_scheme: str = "orange",
 ) -> Path:
-    """Warp one frame from theta/range raster to X/Y raster.
+    """Warp one polar theta/range image to X/Y raster.
 
     Coordinate convention:
       - r is range bin index by default, 0 at the transducer/origin.
-      - theta is radians, loaded from .prejpg.bin.
+      - theta is radians.
       - x = r * sin(theta)
       - y = r * cos(theta)
 
@@ -152,10 +173,7 @@ def polar_jpeg_to_xy(
       - +y / forward is toward the top of the image.
       - x positive is to the right.
     """
-    img = np.asarray(Image.open(jpg_path).convert("L"))
     n_theta, n_range = img.shape
-
-    theta = read_theta_table(prejpg_path, n_theta=n_theta)
     if flip_theta:
         theta = theta[::-1]
         img = img[::-1, :]
@@ -220,6 +238,75 @@ def polar_jpeg_to_xy(
     return out_path
 
 
+def polar_jpeg_to_xy(
+    jpg_path: Path,
+    prejpg_path: Path,
+    out_path: Path,
+    out_width: int = 900,
+    out_height: int = 900,
+    max_range: Optional[float] = None,
+    range_offset_bins: float = 0.0,
+    theta_offset_deg: float = 0.0,
+    flip_theta: bool = False,
+    flip_range: bool = False,
+    forward_is_up: bool = True,
+    color_scheme: str = "orange",
+) -> Path:
+    """Warp one extracted JPEG using theta from its .prejpg.bin metadata."""
+    img = np.asarray(Image.open(jpg_path).convert("L"))
+    theta = read_theta_table(prejpg_path, n_theta=img.shape[0])
+    return polar_image_to_xy(
+        img=img,
+        theta=theta,
+        out_path=out_path,
+        out_width=out_width,
+        out_height=out_height,
+        max_range=max_range,
+        range_offset_bins=range_offset_bins,
+        theta_offset_deg=theta_offset_deg,
+        flip_theta=flip_theta,
+        flip_range=flip_range,
+        forward_is_up=forward_is_up,
+        color_scheme=color_scheme,
+    )
+
+
+def saved_live_frame_to_xy(
+    image_path: Path,
+    theta_csv_path: Path,
+    out_path: Path,
+    input_rotated_ccw: bool = False,
+    out_width: int = 900,
+    out_height: int = 900,
+    max_range: Optional[float] = None,
+    range_offset_bins: float = 0.0,
+    theta_offset_deg: float = 0.0,
+    flip_theta: bool = False,
+    flip_range: bool = False,
+    forward_is_up: bool = True,
+    color_scheme: str = "orange",
+) -> Path:
+    """Warp a saved live-viewer raw PNG using theta from frame_XXXXXX_theta.csv."""
+    img = np.asarray(Image.open(image_path).convert("L"))
+    if input_rotated_ccw:
+        img = np.rot90(img, k=-1)
+    theta = read_theta_csv(theta_csv_path, n_theta=img.shape[0])
+    return polar_image_to_xy(
+        img=img,
+        theta=theta,
+        out_path=out_path,
+        out_width=out_width,
+        out_height=out_height,
+        max_range=max_range,
+        range_offset_bins=range_offset_bins,
+        theta_offset_deg=theta_offset_deg,
+        flip_theta=flip_theta,
+        flip_range=flip_range,
+        forward_is_up=forward_is_up,
+        color_scheme=color_scheme,
+    )
+
+
 def default_pre_for_jpg(jpg: Path) -> Path:
     # frame_000123.jpg -> frame_000123.prejpg.bin
     return jpg.with_suffix(".prejpg.bin")
@@ -241,6 +328,30 @@ def iter_jobs(input_path: Path, pre: Optional[Path], out: Path) -> Iterable[Tupl
         else:
             out_file = out
         yield input_path, pre, out_file
+
+
+def default_theta_csv_for_image(image_path: Path) -> Path:
+    if image_path.name.endswith("_raw_rotated.png"):
+        return image_path.with_name(image_path.name.replace("_raw_rotated.png", "_theta.csv"))
+    return image_path.with_name(f"{image_path.stem}_theta.csv")
+
+
+def iter_theta_csv_jobs(input_path: Path, theta_csv: Optional[Path], out: Path) -> Iterable[Tuple[Path, Path, Path]]:
+    if input_path.is_dir():
+        out.mkdir(parents=True, exist_ok=True)
+        for image_path in sorted(input_path.glob("*_raw_rotated.png")):
+            theta_path = default_theta_csv_for_image(image_path)
+            if theta_path.exists():
+                yield image_path, theta_path, out / f"{image_path.stem}_xy.png"
+    else:
+        if theta_csv is None:
+            theta_csv = default_theta_csv_for_image(input_path)
+        if out.suffix.lower() not in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+            out.mkdir(parents=True, exist_ok=True)
+            out_file = out / f"{input_path.stem}_xy.png"
+        else:
+            out_file = out
+        yield input_path, theta_csv, out_file
 
 
 def make_contact_sheet(paths: list[Path], out_path: Path, thumb_w: int = 240, cols: int = 4) -> None:
@@ -266,8 +377,10 @@ def make_contact_sheet(paths: list[Path], out_path: Path, thumb_w: int = 240, co
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Warp extracted Garmin theta/range JPEGs into X/Y fan images.")
-    ap.add_argument("input", type=Path, help="frame.jpg or a directory containing frame_*.jpg + frame_*.prejpg.bin")
+    ap.add_argument("input", type=Path, help="frame.jpg, frame_XXXXXX_raw_rotated.png, or a matching frame directory")
     ap.add_argument("--pre", type=Path, default=None, help="matching .prejpg.bin for single-image mode")
+    ap.add_argument("--theta-csv", type=Path, default=None, help="matching frame_XXXXXX_theta.csv for saved live-viewer PNGs")
+    ap.add_argument("--input-rotated-ccw", action="store_true", help="input image was saved rotated 90 degrees counter-clockwise")
     ap.add_argument("--out", type=Path, default=Path("xy_out"), help="output PNG path, or output directory for batch mode")
     ap.add_argument("--width", type=int, default=900, help="output image width")
     ap.add_argument("--height", type=int, default=900, help="output image height")
@@ -290,24 +403,45 @@ def main() -> None:
     args = ap.parse_args()
 
     written: list[Path] = []
-    for jpg, prejpg, out_file in iter_jobs(args.input, args.pre, args.out):
-        print(f"warping {jpg.name} using {prejpg.name} -> {out_file}")
-        written.append(
-            polar_jpeg_to_xy(
-                jpg_path=jpg,
-                prejpg_path=prejpg,
-                out_path=out_file,
-                out_width=args.width,
-                out_height=args.height,
-                max_range=args.max_range,
-                range_offset_bins=args.range_offset_bins,
-                theta_offset_deg=args.theta_offset_deg,
-                flip_theta=args.flip_theta,
-                flip_range=args.flip_range,
-                forward_is_up=not args.forward_down,
-                color_scheme=args.colorscheme,
+    if args.theta_csv is not None or args.input_rotated_ccw:
+        for image_path, theta_path, out_file in iter_theta_csv_jobs(args.input, args.theta_csv, args.out):
+            print(f"warping {image_path.name} using {theta_path.name} -> {out_file}")
+            written.append(
+                saved_live_frame_to_xy(
+                    image_path=image_path,
+                    theta_csv_path=theta_path,
+                    out_path=out_file,
+                    input_rotated_ccw=args.input_rotated_ccw,
+                    out_width=args.width,
+                    out_height=args.height,
+                    max_range=args.max_range,
+                    range_offset_bins=args.range_offset_bins,
+                    theta_offset_deg=args.theta_offset_deg,
+                    flip_theta=args.flip_theta,
+                    flip_range=args.flip_range,
+                    forward_is_up=not args.forward_down,
+                    color_scheme=args.colorscheme,
+                )
             )
-        )
+    else:
+        for jpg, prejpg, out_file in iter_jobs(args.input, args.pre, args.out):
+            print(f"warping {jpg.name} using {prejpg.name} -> {out_file}")
+            written.append(
+                polar_jpeg_to_xy(
+                    jpg_path=jpg,
+                    prejpg_path=prejpg,
+                    out_path=out_file,
+                    out_width=args.width,
+                    out_height=args.height,
+                    max_range=args.max_range,
+                    range_offset_bins=args.range_offset_bins,
+                    theta_offset_deg=args.theta_offset_deg,
+                    flip_theta=args.flip_theta,
+                    flip_range=args.flip_range,
+                    forward_is_up=not args.forward_down,
+                    color_scheme=args.colorscheme,
+                )
+            )
 
     print(f"wrote {len(written)} warped image(s)")
     if args.make_contact_sheet and written:

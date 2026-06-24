@@ -245,6 +245,18 @@ Warp a whole output directory:
 python3 warp_garmin_polar_to_xy.py garmin_out --out xy_out --make-contact-sheet
 ```
 
+Warp a saved live-viewer raw frame:
+
+```bash
+python3 warp_garmin_polar_to_xy.py frames/frame_000123_raw_rotated.png --theta-csv frames/frame_000123_theta.csv --input-rotated-ccw --out frame_000123_xy.png
+```
+
+Warp a whole live-viewer frames folder:
+
+```bash
+python3 warp_garmin_polar_to_xy.py frames --input-rotated-ccw --out xy_out --make-contact-sheet
+```
+
 Useful tuning flags:
 
 ```bash
