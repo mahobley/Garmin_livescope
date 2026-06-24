@@ -1,5 +1,4 @@
 cat > .gitignore <<'EOF'
-tests/
 __pycache__/
 *.pyc
 .env
