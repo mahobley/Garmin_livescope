@@ -110,6 +110,23 @@ Useful echogram options:
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
 
+### Packet Logging
+
+To search for Garmin status/control packets such as depth, temperature, gain, or settings, log non-image UDP packets while the viewer runs:
+
+```bash
+sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --log-other-packets
+```
+
+This writes:
+
+```bash
+other_packets/other_packets.csv       one row per non-image UDP packet
+other_packets/other_packet_words.csv  each payload decoded as 4-byte int/float words
+```
+
+For controlled tests, start logging, wait a few seconds, change one Garmin setting, wait a few more seconds, then stop with `Control-C`.
+
 ### Save Location
 
 At startup, the live viewer asks where to save files, then asks for:
@@ -130,7 +147,7 @@ Skip the prompt or set the folder from the command line:
 --frames-dir frames_test
 ```
 
-`--session-name trial_01` is also available as a quick prefix; it creates defaults like `trial_01_raw.mp4`, `trial_01_echogram.mp4`, and `trial_01_frames/`.
+`--session-name trial_01` is also available as a quick prefix. Output names get the run date/time appended automatically, for example `trial_01_raw_2026-06-24_153012.mp4`, `trial_01_echogram_2026-06-24_153012.mp4`, and `trial_01_frames_2026-06-24_153012/`.
 
 ### Save Frames
 
@@ -138,7 +155,7 @@ Every decoded frame is saved by default to `frames/`:
 
 ```bash
 frame_XXXXXX_raw_rotated.png  rotated raw view, lossless PNG
-frame_XXXXXX_warp_metadata.txt  human-readable warp metadata, including estimated selected range in feet/meters
+frame_XXXXXX_warp_metadata.txt  human-readable warp metadata, including date/time, temperature, and estimated range
 frame_XXXXXX_theta.csv        human-readable theta/angle table in degrees
 ```
 

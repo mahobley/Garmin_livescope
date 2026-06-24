@@ -31,10 +31,11 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from scapy.all import sniff, UDP, Raw
+from scapy.all import sniff
 
 from garmin_echogram import EchogramState
 from garmin_outputs import (
+    append_timestamp_to_path,
     choose_save_root,
     prompt_output_path,
     safe_name,
@@ -43,7 +44,8 @@ from garmin_outputs import (
     unique_dir,
     unique_file,
 )
-from garmin_packets import GarminFrameAssembler
+from garmin_packet_logger import OtherPacketLogger, extract_temperature_c, udp_payload
+from garmin_packets import GarminFrameAssembler, parse_chunk_header
 from garmin_recording import RecordingState
 from garmin_state import MotionState, ViewState
 from garmin_ui import (
@@ -65,11 +67,14 @@ from garmin_ui import (
 from garmin_view import COLOR_SCHEMES, colorize_for_cv2, polar_image_to_xy, prepare_raw_view_and_record_frame
 
 
-def decode_packet_frame(pkt, assembler: GarminFrameAssembler) -> Optional[tuple[int, np.ndarray, bytes]]:
-    if UDP not in pkt or Raw not in pkt:
-        return None
+def is_image_chunk(payload: bytes, stream_filter: Optional[int]) -> bool:
+    header = parse_chunk_header(payload)
+    if header is None:
+        return False
+    return stream_filter is None or header.stream_id == stream_filter
 
-    payload = bytes(pkt[Raw].load)
+
+def decode_packet_frame(payload: bytes, assembler: GarminFrameAssembler) -> Optional[tuple[int, np.ndarray, bytes]]:
     result = assembler.add_payload(payload)
     if result is None:
         return None
@@ -196,6 +201,8 @@ def main() -> None:
     parser.add_argument("--autosave-raw", action="store_true", help="Automatically record raw footage in rolling segments")
     parser.add_argument("--autosave-echogram", action="store_true", help="Automatically record echogram footage in rolling segments")
     parser.add_argument("--autosave-minutes", type=float, default=10.0, help="Autosave segment length in minutes; default: 10")
+    parser.add_argument("--log-other-packets", action="store_true", help="Log non-image UDP packets for reverse engineering")
+    parser.add_argument("--other-packets-dir", type=Path, default=Path("other_packets"), help="Folder for --log-other-packets CSV output")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
     parser.add_argument("--warp-xy", action="store_true", help="Start in warped theta/range X/Y fan view")
     parser.add_argument("--width", type=int, default=900, help="warped output width when --warp-xy is enabled")
@@ -227,6 +234,7 @@ def main() -> None:
         help="warped display color ramp; default: orange",
     )
     args = parser.parse_args()
+    run_timestamp = time.strftime("%Y-%m-%d_%H%M%S")
 
     stream_filter = None if args.stream.lower() == "all" else int(args.stream, 0)
     assembler = GarminFrameAssembler(stream_filter=stream_filter)
@@ -238,22 +246,40 @@ def main() -> None:
         save_root.mkdir(parents=True, exist_ok=True)
         if args.session_name:
             prefix = safe_name(args.session_name)
-            args.record_video = Path(f"{prefix}_raw{args.record_video.suffix or '.mp4'}")
-            args.record_echogram = Path(f"{prefix}_echogram{args.record_echogram.suffix or '.mp4'}")
-            args.frames_dir = Path(f"{prefix}_frames")
+            args.record_video = Path(f"{prefix}_raw_{run_timestamp}{args.record_video.suffix or '.mp4'}")
+            args.record_echogram = Path(f"{prefix}_echogram_{run_timestamp}{args.record_echogram.suffix or '.mp4'}")
+            args.frames_dir = Path(f"{prefix}_frames_{run_timestamp}")
+            args.other_packets_dir = Path(f"{prefix}_other_packets_{run_timestamp}")
         elif not args.no_save_prompt:
             args.record_video = prompt_output_path("Raw MP4 filename", args.record_video)
             args.record_echogram = prompt_output_path("Echogram MP4 filename", args.record_echogram)
             args.frames_dir = prompt_output_path("Frames folder name", args.frames_dir, is_dir=True)
+            args.record_video = append_timestamp_to_path(args.record_video, run_timestamp)
+            args.record_echogram = append_timestamp_to_path(args.record_echogram, run_timestamp)
+            args.frames_dir = append_timestamp_to_path(args.frames_dir, run_timestamp)
+            args.other_packets_dir = append_timestamp_to_path(args.other_packets_dir, run_timestamp)
+        else:
+            args.record_video = append_timestamp_to_path(args.record_video, run_timestamp)
+            args.record_echogram = append_timestamp_to_path(args.record_echogram, run_timestamp)
+            args.frames_dir = append_timestamp_to_path(args.frames_dir, run_timestamp)
+            args.other_packets_dir = append_timestamp_to_path(args.other_packets_dir, run_timestamp)
 
         args.save = under_save_root(args.save, save_root)
         args.frames_dir = unique_dir(under_save_root(args.frames_dir, save_root))
+        args.other_packets_dir = unique_dir(under_save_root(args.other_packets_dir, save_root))
         args.record_video = unique_file(under_save_root(args.record_video, save_root))
         args.record_echogram = unique_file(under_save_root(args.record_echogram, save_root))
         print(f"Saving outputs under: {save_root}")
         print(f"Raw video: {args.record_video}")
         print(f"Echogram video: {args.record_echogram}")
         print(f"Frames folder: {args.frames_dir}")
+        if args.log_other_packets:
+            print(f"Other-packet logs: {args.other_packets_dir}")
+    else:
+        args.record_video = append_timestamp_to_path(args.record_video, run_timestamp)
+        args.record_echogram = append_timestamp_to_path(args.record_echogram, run_timestamp)
+        args.frames_dir = append_timestamp_to_path(args.frames_dir, run_timestamp)
+        args.other_packets_dir = append_timestamp_to_path(args.other_packets_dir, run_timestamp)
 
     save_all_frames = not args.no_save_frames
     if args.save:
@@ -263,6 +289,8 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
+    latest_temperature_c = None
+    printed_temperature_detected = False
     autosave_seconds = max(1.0, args.autosave_minutes * 60.0)
     recording = RecordingState(
         args.record_video,
@@ -307,6 +335,8 @@ def main() -> None:
         print(f"Autosaving echogram footage every {args.autosave_minutes:g} minute(s) to {args.record_echogram}")
     if echogram is not None:
         print("Showing scrolling echogram in a second OpenCV window. Its START REC button records echogram footage.")
+    if args.log_other_packets:
+        print("Logging non-image UDP packets for reverse engineering.")
 
     def on_mouse(event, x, y, _flags, _param) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -365,9 +395,25 @@ def main() -> None:
         bpf = f"udp port {args.udp_port}"
 
     def handle_packet(pkt) -> None:
-        nonlocal frame_count, t0
+        nonlocal frame_count, t0, latest_temperature_c, printed_temperature_detected
 
-        result = decode_packet_frame(pkt, assembler)
+        payload = udp_payload(pkt)
+        if payload is None:
+            return
+
+        temperature_c = extract_temperature_c(payload)
+        if temperature_c is not None:
+            latest_temperature_c = temperature_c
+            if not printed_temperature_detected:
+                temperature_f = temperature_c * 9.0 / 5.0 + 32.0
+                print(f"Temperature detected: {temperature_c:.2f} C / {temperature_f:.2f} F")
+                printed_temperature_detected = True
+
+        if packet_logger is not None and not is_image_chunk(payload, stream_filter):
+            packet_logger.log(pkt, payload)
+            return
+
+        result = decode_packet_frame(payload, assembler)
         if result is None:
             return
 
@@ -379,7 +425,15 @@ def main() -> None:
         raw_view_img, raw_record_frame = prepare_raw_view_and_record_frame(img)
 
         if save_all_frames:
-            save_decoded_frame(args.frames_dir, frame_id, raw_view_img, prejpg, img.shape)
+            save_decoded_frame(
+                args.frames_dir,
+                frame_id,
+                raw_view_img,
+                prejpg,
+                img.shape,
+                capture_time=time.time(),
+                temperature_c=latest_temperature_c,
+            )
 
         frame_count += 1
         elapsed = max(0.001, time.time() - t0)
@@ -407,8 +461,13 @@ def main() -> None:
         key = cv2.waitKey(1) & 0xFF
         handle_keyboard(key, view, motion)
 
+    packet_logger = OtherPacketLogger(args.other_packets_dir) if args.log_other_packets else None
     try:
-        sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)
+        if packet_logger is None:
+            sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)
+        else:
+            with packet_logger:
+                sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

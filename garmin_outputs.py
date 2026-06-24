@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import re
 import time
 from pathlib import Path
@@ -14,6 +15,8 @@ RANGE_SCALE_OFFSET = 32
 RANGE_FEET_SCALE = 2.221279251
 RANGE_FEET_OFFSET = 0.020227821
 FEET_TO_METERS = 0.3048
+CELSIUS_TO_FAHRENHEIT_SCALE = 9.0 / 5.0
+CELSIUS_TO_FAHRENHEIT_OFFSET = 32.0
 
 
 def save_decoded_frame(
@@ -22,22 +25,40 @@ def save_decoded_frame(
     raw_view_img: np.ndarray,
     prejpg: bytes,
     polar_shape: tuple[int, int],
+    capture_time: float,
+    temperature_c: Optional[float],
 ) -> None:
     """Save the rotated raw frame and warp metadata."""
     stem = f"frame_{frame_id:06d}"
     cv2.imwrite(str(outdir / f"{stem}_raw_rotated.png"), raw_view_img)
-    save_warp_metadata(outdir, stem, frame_id, prejpg, polar_shape)
+    save_warp_metadata(outdir, stem, frame_id, prejpg, polar_shape, capture_time, temperature_c)
 
 
-def save_warp_metadata(outdir: Path, stem: str, frame_id: int, prejpg: bytes, polar_shape: tuple[int, int]) -> None:
+def save_warp_metadata(
+    outdir: Path,
+    stem: str,
+    frame_id: int,
+    prejpg: bytes,
+    polar_shape: tuple[int, int],
+    capture_time: float,
+    temperature_c: Optional[float],
+) -> None:
     """Write human-readable warp metadata beside the binary pre-JPEG block."""
     n_theta, n_range = polar_shape
     theta = read_theta_from_prejpg(prejpg, n_theta)
     range_scale = read_float32_from_prejpg(prejpg, RANGE_SCALE_OFFSET)
     selected_range_ft = estimate_selected_range_feet(range_scale)
     selected_range_m = feet_to_meters(selected_range_ft)
+    captured_at = datetime.fromtimestamp(capture_time)
+    temperature_f = celsius_to_fahrenheit(temperature_c)
     summary = [
         f"frame_id: {frame_id}",
+        f"capture_unix_time: {capture_time:.6f}",
+        f"capture_datetime_local: {captured_at.strftime('%Y-%m-%d %H:%M:%S.%f')}",
+        f"capture_date_local: {captured_at.strftime('%Y-%m-%d')}",
+        f"capture_time_local: {captured_at.strftime('%H:%M:%S.%f')}",
+        f"temperature_celsius: {format_optional_float(temperature_c)}",
+        f"temperature_fahrenheit: {format_optional_float(temperature_f)}",
         f"source_polar_rows_theta: {n_theta}",
         f"source_polar_columns_range: {n_range}",
         f"prejpg_bytes: {len(prejpg)}",
@@ -92,6 +113,12 @@ def feet_to_meters(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
     return value * FEET_TO_METERS
+
+
+def celsius_to_fahrenheit(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value * CELSIUS_TO_FAHRENHEIT_SCALE + CELSIUS_TO_FAHRENHEIT_OFFSET
 
 
 def format_optional_float(value: Optional[float]) -> str:
@@ -157,6 +184,13 @@ def prompt_output_path(label: str, default: Path, is_dir: bool = False) -> Path:
     if entered_path.suffix == "" and suffix:
         entered_path = entered_path.with_suffix(suffix)
     return Path(safe_name(entered_path.name)) if entered_path.parent == Path(".") else entered_path
+
+
+def append_timestamp_to_path(path: Path, timestamp: str) -> Path:
+    """Append _YYYY-MM-DD_HHMMSS to a file or folder path."""
+    if path.suffix:
+        return path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
+    return path.with_name(f"{path.name}_{timestamp}")
 
 
 def unique_file(path: Path) -> Path:
