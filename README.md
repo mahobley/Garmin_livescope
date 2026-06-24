@@ -101,6 +101,28 @@ Useful echogram options:
 
 Stop the viewer with `Control-C` in the terminal, or press `q` while the OpenCV window is focused.
 
+### Save Location
+
+At startup, the live viewer asks where to save files, then asks for:
+
+- raw MP4 filename
+- echogram MP4 filename
+- frames folder name
+
+If a file or folder already exists, the script creates a new name like `test_002.mp4` or `frames_002` instead of overwriting old files.
+
+Skip the prompt or set the folder from the command line:
+
+```bash
+--no-save-prompt
+--save-root /path/to/all_sessions
+--record-video raw_test.mp4
+--record-echogram echo_test.mp4
+--frames-dir frames_test
+```
+
+`--session-name trial_01` is also available as a quick prefix; it creates defaults like `trial_01_raw.mp4`, `trial_01_echogram.mp4`, and `trial_01_frames/`.
+
 ### Save Frames
 
 Every decoded frame is saved by default to `frames/`:

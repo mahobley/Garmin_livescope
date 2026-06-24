@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -195,6 +196,89 @@ def save_decoded_frame(outdir: Path, frame_id: int, raw_view_img: np.ndarray) ->
     """Save the rotated raw frame as a lossless PNG."""
     stem = f"frame_{frame_id:06d}"
     cv2.imwrite(str(outdir / f"{stem}_raw_rotated.png"), raw_view_img)
+
+
+def choose_save_root(default: Path = Path("recordings")) -> Path:
+    """Ask for a root output folder with a GUI dialog, falling back to terminal input."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            title="Choose where to save Garmin LiveScope files",
+            initialdir=str(default.expanduser().resolve().parent),
+            mustexist=False,
+        )
+        root.destroy()
+        if selected:
+            return Path(selected)
+    except Exception as exc:
+        print(f"Save-folder dialog unavailable: {exc}")
+
+    entered = input(f"Save folder [{default}]: ").strip()
+    return Path(entered) if entered else default
+
+
+def under_save_root(path: Optional[Path], save_root: Path) -> Optional[Path]:
+    """Resolve relative output paths under the selected save root."""
+    if path is None or path.is_absolute():
+        return path
+    return save_root / path
+
+
+def safe_name(name: str) -> str:
+    """Make a filesystem-friendly session/file name."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or time.strftime("livescope_%Y%m%d_%H%M%S")
+
+
+def choose_session_name(default: Optional[str] = None) -> str:
+    """Ask for a session name in the terminal."""
+    default_name = default or time.strftime("livescope_%Y%m%d_%H%M%S")
+    entered = input(f"Session/file name [{default_name}]: ").strip()
+    return safe_name(entered or default_name)
+
+
+def prompt_output_path(label: str, default: Path, is_dir: bool = False) -> Path:
+    """Ask for one output file/folder name."""
+    entered = input(f"{label} [{default}]: ").strip()
+    if not entered:
+        return default
+    if is_dir:
+        return Path(safe_name(entered))
+    entered_path = Path(entered)
+    suffix = default.suffix
+    if entered_path.suffix == "" and suffix:
+        entered_path = entered_path.with_suffix(suffix)
+    return Path(safe_name(entered_path.name)) if entered_path.parent == Path(".") else entered_path
+
+
+def unique_file(path: Path) -> Path:
+    """Return path, or path_002.ext, path_003.ext, etc. if it already exists."""
+    if not path.exists():
+        return path
+    suffix = path.suffix
+    stem = path.stem
+    for i in range(2, 10000):
+        candidate = path.with_name(f"{stem}_{i:03d}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"could not find unique file name for {path}")
+
+
+def unique_dir(path: Path) -> Path:
+    """Return path, or path_002, path_003, etc. if it already exists."""
+    if not path.exists():
+        return path
+    for i in range(2, 10000):
+        candidate = path.with_name(f"{path.name}_{i:03d}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"could not find unique folder name for {path}")
 
 
 def make_video_writer(path: Path, fps: float, frame_size: Tuple[int, int]) -> cv2.VideoWriter:
@@ -593,6 +677,9 @@ def main() -> None:
     parser.add_argument("--record-video", type=Path, default=Path("livescope.mp4"), help="Output path for the START REC button; default: livescope.mp4")
     parser.add_argument("--record-echogram", type=Path, default=Path("echogram.mp4"), help="Output path for the echogram START REC button; default: echogram.mp4")
     parser.add_argument("--video-fps", type=float, default=20.0, help="FPS to write into recorded video; default: 20")
+    parser.add_argument("--save-root", type=Path, default=None, help="Root folder for relative output paths; prompts by default")
+    parser.add_argument("--session-name", default=None, help="Optional prefix for default output names")
+    parser.add_argument("--no-save-prompt", action="store_true", help="Do not ask for an output folder at startup")
     parser.add_argument("--autosave-raw", action="store_true", help="Automatically record raw footage in rolling segments")
     parser.add_argument("--autosave-echogram", action="store_true", help="Automatically record echogram footage in rolling segments")
     parser.add_argument("--autosave-minutes", type=float, default=10.0, help="Autosave segment length in minutes; default: 10")
@@ -630,6 +717,30 @@ def main() -> None:
 
     stream_filter = None if args.stream.lower() == "all" else int(args.stream, 0)
     assembler = GarminFrameAssembler(stream_filter=stream_filter)
+
+    save_root = args.save_root
+    if save_root is None and not args.no_save_prompt:
+        save_root = choose_save_root()
+    if save_root is not None:
+        save_root.mkdir(parents=True, exist_ok=True)
+        if args.session_name:
+            prefix = safe_name(args.session_name)
+            args.record_video = Path(f"{prefix}_raw{args.record_video.suffix or '.mp4'}")
+            args.record_echogram = Path(f"{prefix}_echogram{args.record_echogram.suffix or '.mp4'}")
+            args.frames_dir = Path(f"{prefix}_frames")
+        elif not args.no_save_prompt:
+            args.record_video = prompt_output_path("Raw MP4 filename", args.record_video)
+            args.record_echogram = prompt_output_path("Echogram MP4 filename", args.record_echogram)
+            args.frames_dir = prompt_output_path("Frames folder name", args.frames_dir, is_dir=True)
+
+        args.save = under_save_root(args.save, save_root)
+        args.frames_dir = unique_dir(under_save_root(args.frames_dir, save_root))
+        args.record_video = unique_file(under_save_root(args.record_video, save_root))
+        args.record_echogram = unique_file(under_save_root(args.record_echogram, save_root))
+        print(f"Saving outputs under: {save_root}")
+        print(f"Raw video: {args.record_video}")
+        print(f"Echogram video: {args.record_echogram}")
+        print(f"Frames folder: {args.frames_dir}")
 
     save_all_frames = not args.no_save_frames
     if args.save:
