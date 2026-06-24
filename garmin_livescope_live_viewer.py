@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -61,7 +62,122 @@ from garmin_ui import (
     draw_view_button,
     prompt_motion_gain,
 )
-from garmin_view import COLOR_SCHEMES, colorize_for_cv2, polar_image_to_xy, rotate_raw_view
+from garmin_view import COLOR_SCHEMES, colorize_for_cv2, polar_image_to_xy, prepare_raw_view_and_record_frame
+
+
+def decode_packet_frame(pkt, assembler: GarminFrameAssembler) -> Optional[tuple[int, np.ndarray, bytes]]:
+    if UDP not in pkt or Raw not in pkt:
+        return None
+
+    payload = bytes(pkt[Raw].load)
+    result = assembler.add_payload(payload)
+    if result is None:
+        return None
+
+    frame_id, jpg, prejpg = result
+    arr = np.frombuffer(jpg, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+
+    return frame_id, img, prejpg
+
+
+def update_echogram_window(
+    img: np.ndarray,
+    prejpg: bytes,
+    echogram: EchogramState,
+    echogram_motion: MotionState,
+    echogram_recording: RecordingState,
+) -> None:
+    echogram_img = echogram.add_frame(img, prejpg)
+    echogram_img = echogram_motion.apply(echogram_img)
+    echogram_display = echogram.render(echogram_img)
+    echogram_recording.sync((echogram_display.shape[1], echogram_display.shape[0]))
+    echogram_recording.write(echogram_display)
+    draw_record_button(
+        echogram_display,
+        recording_enabled=True,
+        recording=echogram_recording.writer is not None,
+    )
+    cv2.imshow(ECHOGRAM_WINDOW_NAME, echogram_display)
+
+
+def render_main_display(
+    img: np.ndarray,
+    prejpg: bytes,
+    raw_view_img: np.ndarray,
+    view: ViewState,
+    motion: MotionState,
+    args: argparse.Namespace,
+    frame_id: int,
+) -> Optional[np.ndarray]:
+    if view.warp_enabled:
+        try:
+            warped = polar_image_to_xy(
+                img,
+                prejpg,
+                out_width=args.width,
+                out_height=args.height,
+                max_range=args.max_range,
+                range_offset_bins=args.range_offset_bins,
+                theta_offset_deg=args.theta_offset_deg,
+                flip_theta=args.flip_theta,
+                flip_range=args.flip_range,
+                forward_is_up=not args.forward_down,
+            )
+        except ValueError as exc:
+            print(f"frame {frame_id}: cannot warp: {exc}")
+            return None
+        if motion.enabled:
+            return motion.apply_signed_color(warped)
+        return colorize_for_cv2(warped, args.colorscheme)
+
+    return motion.apply_signed_color(raw_view_img)
+
+
+def record_frame(recording: RecordingState, frame: np.ndarray) -> None:
+    height, width = frame.shape[:2]
+    recording.sync((width, height))
+    recording.write(frame)
+
+
+def draw_main_overlays(
+    display: np.ndarray,
+    frame_id: int,
+    fps: float,
+    recording: RecordingState,
+    view: ViewState,
+    motion: MotionState,
+) -> None:
+    cv2.putText(
+        display,
+        f"Frame {frame_id} | {fps:.1f} FPS",
+        (10, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+    )
+    draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
+    draw_view_button(display, warp_enabled=view.warp_enabled)
+    draw_motion_button(display, motion_enabled=motion.enabled)
+    draw_gain_buttons(display, gain=motion.gain)
+
+
+def handle_keyboard(key: int, view: ViewState, motion: MotionState) -> None:
+    if key == ord("w"):
+        view.toggle()
+    if key == ord("m"):
+        motion.toggle()
+    if key == ord("["):
+        motion.adjust_gain(-MOTION_GAIN_STEP)
+    if key == ord("]"):
+        motion.adjust_gain(MOTION_GAIN_STEP)
+    if key == ord("g"):
+        prompt_motion_gain(motion)
+    if key == ord("q"):
+        raise KeyboardInterrupt
 
 
 def main() -> None:
@@ -251,36 +367,16 @@ def main() -> None:
     def handle_packet(pkt) -> None:
         nonlocal frame_count, t0
 
-        if UDP not in pkt or Raw not in pkt:
-            return
-
-        payload = bytes(pkt[Raw].load)
-        result = assembler.add_payload(payload)
+        result = decode_packet_frame(pkt, assembler)
         if result is None:
             return
 
-        frame_id, jpg, prejpg = result
-
-        arr = np.frombuffer(jpg, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return
+        frame_id, img, prejpg = result
 
         if echogram is not None:
-            echogram_img = echogram.add_frame(img, prejpg)
-            echogram_img = echogram_motion.apply(echogram_img)
-            echogram_display = echogram.render(echogram_img)
-            echogram_recording.sync((echogram_display.shape[1], echogram_display.shape[0]))
-            echogram_recording.write(echogram_display)
-            draw_record_button(
-                echogram_display,
-                recording_enabled=True,
-                recording=echogram_recording.writer is not None,
-            )
-            cv2.imshow(ECHOGRAM_WINDOW_NAME, echogram_display)
+            update_echogram_window(img, prejpg, echogram, echogram_motion, echogram_recording)
 
-        raw_view_img = rotate_raw_view(img)
-        raw_record_frame = cv2.cvtColor(raw_view_img, cv2.COLOR_GRAY2BGR)
+        raw_view_img, raw_record_frame = prepare_raw_view_and_record_frame(img)
 
         if save_all_frames:
             save_decoded_frame(args.frames_dir, frame_id, raw_view_img)
@@ -289,50 +385,15 @@ def main() -> None:
         elapsed = max(0.001, time.time() - t0)
         fps = frame_count / elapsed
 
-        if view.warp_enabled:
-            try:
-                warped = polar_image_to_xy(
-                    img,
-                    prejpg,
-                    out_width=args.width,
-                    out_height=args.height,
-                    max_range=args.max_range,
-                    range_offset_bins=args.range_offset_bins,
-                    theta_offset_deg=args.theta_offset_deg,
-                    flip_theta=args.flip_theta,
-                    flip_range=args.flip_range,
-                    forward_is_up=not args.forward_down,
-                )
-            except ValueError as exc:
-                print(f"frame {frame_id}: cannot warp: {exc}")
-                return
-            if motion.enabled:
-                display = motion.apply_signed_color(warped)
-            else:
-                display = colorize_for_cv2(warped, args.colorscheme)
-        else:
-            display = motion.apply_signed_color(raw_view_img)
-
-        cv2.putText(
-            display,
-            f"Frame {frame_id} | {fps:.1f} FPS",
-            (10, 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (255, 255, 255),
-            2,
-        )
+        display = render_main_display(img, prejpg, raw_view_img, view, motion, args, frame_id)
+        if display is None:
+            return
 
         if recording:
-            height, width = raw_record_frame.shape[:2]
-            recording.sync((width, height))
-            recording.write(raw_record_frame)
+            record_frame(recording, raw_record_frame)
 
         if recording:
-            draw_record_button(display, recording_enabled=True, recording=recording.writer is not None)
-        draw_view_button(display, warp_enabled=view.warp_enabled)
-        draw_motion_button(display, motion_enabled=motion.enabled)
-        draw_gain_buttons(display, gain=motion.gain)
+            draw_main_overlays(display, frame_id, fps, recording, view, motion)
 
         cv2.imshow(WINDOW_NAME, display)
 
@@ -344,18 +405,7 @@ def main() -> None:
                 cv2.imwrite(str(warped_out), display)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord("w"):
-            view.toggle()
-        if key == ord("m"):
-            motion.toggle()
-        if key == ord("["):
-            motion.adjust_gain(-MOTION_GAIN_STEP)
-        if key == ord("]"):
-            motion.adjust_gain(MOTION_GAIN_STEP)
-        if key == ord("g"):
-            prompt_motion_gain(motion)
-        if key == ord("q"):
-            raise KeyboardInterrupt
+        handle_keyboard(key, view, motion)
 
     try:
         sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)

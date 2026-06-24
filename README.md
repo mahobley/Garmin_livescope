@@ -8,6 +8,16 @@ This repo currently has three main scripts:
 - `garmin_pcap_decode_and_solve.py`: offline `.pcapng` decoder that extracts JPEG frames and metadata from a capture file.
 - `warp_garmin_polar_to_xy.py`: converts extracted Garmin polar JPEG frames plus `.prejpg.bin` metadata into X/Y fan images.
 
+The live viewer is split into helper modules:
+
+- `garmin_packets.py`: packet header parsing, JPEG finding, and frame reassembly.
+- `garmin_view.py`: raw rotation, raw recording frame prep, polar-to-X/Y warp, and color conversion.
+- `garmin_state.py`: view state and motion/background subtraction.
+- `garmin_echogram.py`: scrolling echogram image generation.
+- `garmin_recording.py`: video writers, recording state, and autosave clips.
+- `garmin_outputs.py`: save-folder prompts, safe names, unique paths, and frame dumps.
+- `garmin_ui.py`: OpenCV window names, button rectangles, and button drawing.
+
 ## Install
 
 Use Python 3.12+ if possible.
@@ -60,7 +70,7 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy
 
 The viewer has a `WARP VIEW` / `RAW VIEW` button. Click it to switch between the raw Garmin JPEG and the warped X/Y fan view while the script is running. You can also press `w` while the OpenCV window is focused. `--warp-xy` only chooses the starting view.
 
-The viewer also has a `MOTION ON` / `MOTION OFF` button. This removes the slowly changing background and shows only pixels that changed recently. You can also press `m` while the OpenCV window is focused.
+The viewer also has a `MOTION ON` / `MOTION OFF` button. This removes the slowly changing background and shows only pixels that changed recently. In the main LiveScope view, motion color shows the direction of the brightness change: orange = brighter than the learned background, blue = darker than the learned background. You can also press `m` while the OpenCV window is focused.
 
 Use the on-screen `-` and `+` buttons to lower or raise motion gain live. The gain value is shown between them; click the value to enter an exact number in the terminal. Keyboard shortcuts are `[`, `]`, and `g`.
 

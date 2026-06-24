@@ -7,6 +7,10 @@ import cv2
 import numpy as np
 
 
+BRIGHTER_MOTION_COLOR_BGR = np.array((0.0, 0.55, 1.0), dtype=np.float32)
+DARKER_MOTION_COLOR_BGR = np.array((1.0, 0.25, 0.0), dtype=np.float32)
+
+
 @dataclass
 class ViewState:
     warp_enabled: bool
@@ -63,10 +67,12 @@ class MotionState:
         darker = motion < 0
 
         # BGR colors: brighter-than-background is orange, darker is blue.
-        display[brighter, 1] = (magnitude[brighter].astype(np.float32) * 0.55).astype(np.uint8)
-        display[brighter, 2] = magnitude[brighter]
-        display[darker, 0] = magnitude[darker]
-        display[darker, 1] = (magnitude[darker].astype(np.float32) * 0.25).astype(np.uint8)
+        display[brighter] = (
+            magnitude[brighter].astype(np.float32)[:, None] * BRIGHTER_MOTION_COLOR_BGR
+        ).astype(np.uint8)
+        display[darker] = (
+            magnitude[darker].astype(np.float32)[:, None] * DARKER_MOTION_COLOR_BGR
+        ).astype(np.uint8)
         return display
 
     def motion_difference(self, img: np.ndarray) -> Optional[np.ndarray]:

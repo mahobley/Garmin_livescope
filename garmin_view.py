@@ -105,3 +105,10 @@ def colorize_for_cv2(img: np.ndarray, color_scheme: str) -> np.ndarray:
 def rotate_raw_view(img: np.ndarray) -> np.ndarray:
     """Rotate the decoded raw Garmin frame into the preferred viewing orientation."""
     return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
+def prepare_raw_view_and_record_frame(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the rotated raw display frame and the BGR frame used for raw recording."""
+    raw_view_img = rotate_raw_view(img)
+    raw_record_frame = cv2.cvtColor(raw_view_img, cv2.COLOR_GRAY2BGR)
+    return raw_view_img, raw_record_frame
