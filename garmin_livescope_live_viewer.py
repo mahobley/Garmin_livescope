@@ -306,11 +306,12 @@ def main() -> None:
             except ValueError as exc:
                 print(f"frame {frame_id}: cannot warp: {exc}")
                 return
-            display_img = motion.apply(warped)
-            display = colorize_for_cv2(display_img, args.colorscheme)
+            if motion.enabled:
+                display = motion.apply_signed_color(warped)
+            else:
+                display = colorize_for_cv2(warped, args.colorscheme)
         else:
-            display_img = motion.apply(raw_view_img)
-            display = cv2.cvtColor(display_img, cv2.COLOR_GRAY2BGR)
+            display = motion.apply_signed_color(raw_view_img)
 
         cv2.putText(
             display,

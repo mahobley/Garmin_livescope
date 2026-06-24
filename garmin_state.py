@@ -43,13 +43,40 @@ class MotionState:
         if not self.enabled:
             return img
 
+        motion = self.motion_difference(img)
+        if motion is None:
+            return np.zeros_like(img)
+
+        return np.clip(np.abs(motion) * self.gain, 0, 255).astype(np.uint8)
+
+    def apply_signed_color(self, img: np.ndarray) -> np.ndarray:
+        if not self.enabled:
+            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        motion = self.motion_difference(img)
+        if motion is None:
+            return np.zeros((*img.shape, 3), dtype=np.uint8)
+
+        magnitude = np.clip(np.abs(motion) * self.gain, 0, 255).astype(np.uint8)
+        display = np.zeros((*img.shape, 3), dtype=np.uint8)
+        brighter = motion > 0
+        darker = motion < 0
+
+        # BGR colors: brighter-than-background is orange, darker is blue.
+        display[brighter, 1] = (magnitude[brighter].astype(np.float32) * 0.55).astype(np.uint8)
+        display[brighter, 2] = magnitude[brighter]
+        display[darker, 0] = magnitude[darker]
+        display[darker, 1] = (magnitude[darker].astype(np.float32) * 0.25).astype(np.uint8)
+        return display
+
+    def motion_difference(self, img: np.ndarray) -> Optional[np.ndarray]:
         current = img.astype(np.float32)
         if self.background is None or self.background.shape != current.shape:
             self.background = current.copy()
-            return np.zeros_like(img)
+            return None
 
-        diff = cv2.absdiff(current, self.background)
+        diff = current - self.background
         cv2.accumulateWeighted(current, self.background, self.alpha)
 
-        motion = np.maximum(diff - float(self.threshold), 0.0) * self.gain
-        return np.clip(motion, 0, 255).astype(np.uint8)
+        magnitude = np.maximum(np.abs(diff) - float(self.threshold), 0.0)
+        return np.sign(diff) * magnitude
