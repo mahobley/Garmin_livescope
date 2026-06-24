@@ -2,10 +2,9 @@
 
 Python tools for decoding Garmin LiveScope/GLS 10-ish UDP image chunks, extracting the embedded JPEG frames, warping the polar sonar image into an X/Y fan view, and viewing or recording the stream live.
 
-This repo currently has three main scripts:
+This repo currently has two main scripts:
 
 - `garmin_livescope_live_viewer.py`: live packet sniffer, frame reassembler, OpenCV viewer, optional X/Y warp, optional frame/video recording.
-- `garmin_pcap_decode_and_solve.py`: offline `.pcapng` decoder that extracts JPEG frames and metadata from a capture file.
 - `warp_garmin_polar_to_xy.py`: converts extracted Garmin polar JPEG frames plus `.prejpg.bin` metadata into X/Y fan images.
 
 The live viewer is split into helper modules:
@@ -212,28 +211,6 @@ sudo python3 garmin_livescope_live_viewer.py --iface en9 --stream all --warp-xy 
 `--video-fps` does not force the Garmin stream to produce that many frames. It controls how fast the saved video plays back.
 
 Each start/stop creates a complete clip. The first recording uses the exact path you gave, such as `livescope_xy.mp4`; later recordings in the same run use names like `livescope_xy_002.mp4`, `livescope_xy_003.mp4`, and so on.
-
-## Decode a PCAPNG
-
-Extract frames from a saved Wireshark/pcapng capture:
-
-```bash
-python3 garmin_pcap_decode_and_solve.py secondtest.pcapng --out garmin_out
-```
-
-Try all stream IDs if the default stream does not extract frames:
-
-```bash
-python3 garmin_pcap_decode_and_solve.py secondtest.pcapng --out garmin_out --stream all
-```
-
-Outputs include:
-
-- `frame_XXXXXX.jpg`: extracted Garmin JPEG frame.
-- `frame_XXXXXX.prejpg.bin`: metadata bytes before the JPEG, including the theta table used for warping.
-- `frame_XXXXXX.postjpg.bin`: bytes after the JPEG, usually empty in the tested captures.
-- `manifest.txt`: frame completeness and JPEG offset information.
-- `contact_sheet.jpg`: quick visual preview of extracted frames.
 
 ## Warp Extracted Frames
 
