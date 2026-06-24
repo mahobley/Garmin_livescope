@@ -9,10 +9,11 @@ import cv2
 import numpy as np
 
 
-def save_decoded_frame(outdir: Path, frame_id: int, raw_view_img: np.ndarray) -> None:
-    """Save the rotated raw frame as a lossless PNG."""
+def save_decoded_frame(outdir: Path, frame_id: int, raw_view_img: np.ndarray, prejpg: bytes) -> None:
+    """Save the rotated raw frame and its pre-JPEG metadata."""
     stem = f"frame_{frame_id:06d}"
     cv2.imwrite(str(outdir / f"{stem}_raw_rotated.png"), raw_view_img)
+    (outdir / f"{stem}.prejpg.bin").write_bytes(prejpg)
 
 
 def choose_save_root(default: Path = Path("recordings")) -> Path:

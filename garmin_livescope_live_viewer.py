@@ -379,7 +379,7 @@ def main() -> None:
         raw_view_img, raw_record_frame = prepare_raw_view_and_record_frame(img)
 
         if save_all_frames:
-            save_decoded_frame(args.frames_dir, frame_id, raw_view_img)
+            save_decoded_frame(args.frames_dir, frame_id, raw_view_img, prejpg)
 
         frame_count += 1
         elapsed = max(0.001, time.time() - t0)

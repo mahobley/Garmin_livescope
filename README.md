@@ -138,6 +138,7 @@ Every decoded frame is saved by default to `frames/`:
 
 ```bash
 frame_XXXXXX_raw_rotated.png  rotated raw view, lossless PNG
+frame_XXXXXX.prejpg.bin       metadata before the JPEG, including the theta table used for warping
 ```
 
 Change or disable the frame dump:
