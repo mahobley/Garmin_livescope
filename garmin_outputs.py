@@ -9,11 +9,102 @@ import cv2
 import numpy as np
 
 
-def save_decoded_frame(outdir: Path, frame_id: int, raw_view_img: np.ndarray, prejpg: bytes) -> None:
-    """Save the rotated raw frame and its pre-JPEG metadata."""
+THETA_TABLE_OFFSET = 68
+RANGE_SCALE_OFFSET = 32
+RANGE_FEET_SCALE = 2.221279251
+RANGE_FEET_OFFSET = 0.020227821
+FEET_TO_METERS = 0.3048
+
+
+def save_decoded_frame(
+    outdir: Path,
+    frame_id: int,
+    raw_view_img: np.ndarray,
+    prejpg: bytes,
+    polar_shape: tuple[int, int],
+) -> None:
+    """Save the rotated raw frame and warp metadata."""
     stem = f"frame_{frame_id:06d}"
     cv2.imwrite(str(outdir / f"{stem}_raw_rotated.png"), raw_view_img)
-    (outdir / f"{stem}.prejpg.bin").write_bytes(prejpg)
+    save_warp_metadata(outdir, stem, frame_id, prejpg, polar_shape)
+
+
+def save_warp_metadata(outdir: Path, stem: str, frame_id: int, prejpg: bytes, polar_shape: tuple[int, int]) -> None:
+    """Write human-readable warp metadata beside the binary pre-JPEG block."""
+    n_theta, n_range = polar_shape
+    theta = read_theta_from_prejpg(prejpg, n_theta)
+    range_scale = read_float32_from_prejpg(prejpg, RANGE_SCALE_OFFSET)
+    selected_range_ft = estimate_selected_range_feet(range_scale)
+    selected_range_m = feet_to_meters(selected_range_ft)
+    summary = [
+        f"frame_id: {frame_id}",
+        f"source_polar_rows_theta: {n_theta}",
+        f"source_polar_columns_range: {n_range}",
+        f"prejpg_bytes: {len(prejpg)}",
+        f"range_scale_offset_bytes: {RANGE_SCALE_OFFSET}",
+        f"range_scale_raw_float32: {format_optional_float(range_scale)}",
+        f"estimated_selected_range_feet: {format_optional_float(selected_range_ft)}",
+        f"estimated_selected_range_meters: {format_optional_float(selected_range_m)}",
+        f"estimated_feet_per_range_column: {format_optional_float(selected_range_ft / n_range if selected_range_ft is not None else None)}",
+        f"estimated_meters_per_range_column: {format_optional_float(selected_range_m / n_range if selected_range_m is not None else None)}",
+        f"theta_table_offset_bytes: {THETA_TABLE_OFFSET}",
+        "theta_units: degrees",
+        f"theta_count: {0 if theta is None else len(theta)}",
+    ]
+    if theta is not None and len(theta) > 0:
+        summary.extend(
+            [
+                f"theta_min_degrees: {float(np.degrees(np.min(theta))):.6f}",
+                f"theta_max_degrees: {float(np.degrees(np.max(theta))):.6f}",
+                f"theta_first_degrees: {float(np.degrees(theta[0])):.6f}",
+                f"theta_last_degrees: {float(np.degrees(theta[-1])):.6f}",
+                f"theta_csv: {stem}_theta.csv",
+            ]
+        )
+        write_theta_csv(outdir / f"{stem}_theta.csv", theta)
+    else:
+        summary.append("theta_csv: unavailable")
+
+    (outdir / f"{stem}_warp_metadata.txt").write_text("\n".join(summary) + "\n")
+
+
+def read_theta_from_prejpg(prejpg: bytes, n_theta: int) -> Optional[np.ndarray]:
+    need = THETA_TABLE_OFFSET + n_theta * 4
+    if len(prejpg) < need:
+        return None
+    return np.frombuffer(prejpg[THETA_TABLE_OFFSET:need], dtype="<f4").astype(np.float64)
+
+
+def read_float32_from_prejpg(prejpg: bytes, offset: int) -> Optional[float]:
+    need = offset + 4
+    if len(prejpg) < need:
+        return None
+    return float(np.frombuffer(prejpg[offset:need], dtype="<f4", count=1)[0])
+
+
+def estimate_selected_range_feet(range_scale: Optional[float]) -> Optional[float]:
+    if range_scale is None:
+        return None
+    return RANGE_FEET_SCALE * range_scale + RANGE_FEET_OFFSET
+
+
+def feet_to_meters(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value * FEET_TO_METERS
+
+
+def format_optional_float(value: Optional[float]) -> str:
+    if value is None:
+        return "unavailable"
+    return f"{value:.6f}"
+
+
+def write_theta_csv(path: Path, theta: np.ndarray) -> None:
+    lines = ["row,theta_degrees"]
+    for row, value in enumerate(theta):
+        lines.append(f"{row},{float(np.degrees(value)):.6f}")
+    path.write_text("\n".join(lines) + "\n")
 
 
 def choose_save_root(default: Path = Path("recordings")) -> Path:
