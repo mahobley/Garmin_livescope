@@ -170,6 +170,36 @@ def draw_main_overlays(
     draw_gain_buttons(display, gain=motion.gain)
 
 
+def render_no_signal_display(seconds_since_frame: float, waiting_for_first_frame: bool) -> np.ndarray:
+    display = np.zeros((360, 640, 3), dtype=np.uint8)
+    cv2.rectangle(display, (28, 70), (612, 282), (32, 32, 32), thickness=-1)
+    cv2.rectangle(display, (28, 70), (612, 282), (0, 165, 255), thickness=2)
+
+    title = "NO INCOMING LIVESCOPE SIGNAL"
+    detail = "No decoded frames received yet." if waiting_for_first_frame else f"No decoded frames for {seconds_since_frame:.1f} seconds."
+    hint = "Check the Garmin power, mirrored switch port, interface, and stream setting."
+    quit_hint = "Press q to quit. Waiting for frames..."
+
+    for text, y, scale, color, thickness in (
+        (title, 128, 0.78, (0, 165, 255), 2),
+        (detail, 174, 0.58, (255, 255, 255), 1),
+        (hint, 215, 0.45, (210, 210, 210), 1),
+        (quit_hint, 250, 0.45, (180, 180, 180), 1),
+    ):
+        (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        cv2.putText(
+            display,
+            text,
+            (max(20, (display.shape[1] - text_w) // 2), y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            color,
+            thickness,
+        )
+
+    return display
+
+
 def handle_keyboard(key: int, view: ViewState, motion: MotionState) -> None:
     if key == ord("w"):
         view.toggle()
@@ -204,6 +234,7 @@ def main() -> None:
     parser.add_argument("--log-other-packets", action="store_true", help="Log non-image UDP packets for reverse engineering")
     parser.add_argument("--other-packets-dir", type=Path, default=Path("other_packets"), help="Folder for --log-other-packets CSV output")
     parser.add_argument("--udp-port", type=int, default=None, help="Optional UDP port filter")
+    parser.add_argument("--no-signal-seconds", type=float, default=5.0, help="Seconds without decoded frames before showing a no-signal warning; default: 5")
     parser.add_argument("--warp-xy", action="store_true", help="Start in warped theta/range X/Y fan view")
     parser.add_argument("--width", type=int, default=900, help="warped output width when --warp-xy is enabled")
     parser.add_argument("--height", type=int, default=900, help="warped output height when --warp-xy is enabled")
@@ -289,6 +320,7 @@ def main() -> None:
 
     frame_count = 0
     t0 = time.time()
+    last_frame_time: Optional[float] = None
     latest_temperature_c = None
     printed_temperature_detected = False
     autosave_seconds = max(1.0, args.autosave_minutes * 60.0)
@@ -394,8 +426,20 @@ def main() -> None:
     if args.udp_port is not None:
         bpf = f"udp port {args.udp_port}"
 
+    def show_no_signal_warning_if_needed() -> None:
+        now = time.time()
+        previous_frame_time = last_frame_time if last_frame_time is not None else t0
+        seconds_since_frame = now - previous_frame_time
+        if seconds_since_frame < args.no_signal_seconds:
+            return
+
+        display = render_no_signal_display(seconds_since_frame, waiting_for_first_frame=last_frame_time is None)
+        cv2.imshow(WINDOW_NAME, display)
+        key = cv2.waitKey(1) & 0xFF
+        handle_keyboard(key, view, motion)
+
     def handle_packet(pkt) -> None:
-        nonlocal frame_count, t0, latest_temperature_c, printed_temperature_detected
+        nonlocal frame_count, t0, last_frame_time, latest_temperature_c, printed_temperature_detected
 
         payload = udp_payload(pkt)
         if payload is None:
@@ -418,6 +462,7 @@ def main() -> None:
             return
 
         frame_id, img, prejpg = result
+        last_frame_time = time.time()
 
         if echogram is not None:
             update_echogram_window(img, prejpg, echogram, echogram_motion, echogram_recording)
@@ -464,10 +509,14 @@ def main() -> None:
     packet_logger = OtherPacketLogger(args.other_packets_dir) if args.log_other_packets else None
     try:
         if packet_logger is None:
-            sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)
+            while True:
+                sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False, timeout=0.25)
+                show_no_signal_warning_if_needed()
         else:
             with packet_logger:
-                sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False)
+                while True:
+                    sniff(iface=args.iface, filter=bpf, prn=handle_packet, store=False, timeout=0.25)
+                    show_no_signal_warning_if_needed()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
